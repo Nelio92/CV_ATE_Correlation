@@ -3,27 +3,341 @@
 from __future__ import annotations
 
 import queue
+import math
+import re
 import threading
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Any, Mapping
 
 import pandas as pd
 
-from .correlation import attach_covariate, correlate_frame
-from .extraction import LegacyWideTeCsvAdapter
-from .handoff import MANIFEST_SHEET, REQUEST_SHEET, create_measurement_request, import_measurement_results
-from .profiles_8188 import (
+# VS Code's "Run Python File" executes this file by path, outside its package.
+# Add the src directory in that mode so absolute package imports still resolve.
+if __package__ in {None, ""}:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from cv_ate_correlation.correlation import attach_covariate, correlate_frame
+from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
+from cv_ate_correlation.handoff import (
+    MANIFEST_SHEET,
+    REQUEST_SHEET,
+    create_measurement_request,
+    import_measurement_results,
+)
+from cv_ate_correlation.profile_store import (
+    delete_custom_profile,
+    load_custom_profile_specs,
+    profile_store_path,
+    save_custom_profile_spec,
+)
+from cv_ate_correlation.profiles_8188 import (
     CORRELATION_PROFILES,
     EXTRACTION_PROFILES,
+    builtin_profile_ids,
     get_correlation_profile,
     get_extraction_profile,
+    refresh_profiles,
 )
-from .reporting import write_excel_report, write_plots
+from cv_ate_correlation.reporting import write_excel_report, write_plots
 
 
 Action = Callable[[], str]
+APPLICATION_TITLE = "CorreLaTE: ATE-to-Lab Correlation"
+
+
+@dataclass(frozen=True)
+class GroupingConditionOption:
+    key: str
+    label: str
+    default_column: str
+    aliases: tuple[str, ...]
+    hint: str
+
+
+GROUPING_CONDITION_OPTIONS = (
+    GroupingConditionOption(
+        "dut_nr", "DUT Nr", "DUT Nr", (),
+        "One group per device; column example: DUT Nr, values: 1, 2, 17.",
+    ),
+    GroupingConditionOption(
+        "test_number", "Test Number", "Test Number", (),
+        "One group per test; column example: Test Number, value: 53171.",
+    ),
+    GroupingConditionOption(
+        "frequency", "Frequency", "Frequency_GHz", ("Frequency",),
+        "Separate frequencies; column example: Frequency_GHz, values: 76.5, 77, 81.",
+    ),
+    GroupingConditionOption(
+        "supply_corner", "Supply Corner", "Voltage corner", ("Supply Corner",),
+        "Separate supply corners; column example: Voltage corner, values: VMIN, VNOM, VMAX.",
+    ),
+    GroupingConditionOption(
+        "channel", "Channel", "Channel", ("PA Channel",),
+        "Separate physical channels; column example: Channel, values: TX1, TX2, CH3.",
+    ),
+    GroupingConditionOption(
+        "digital_control", "Digital Control", "Digital Control", ("LUT value", "LO IDAC"),
+        "Separate digital settings; column examples: LUT value or LO IDAC, values: 0, 112, 255.",
+    ),
+)
+
+GROUPING_SOURCES = {
+    "Existing input column": "existing",
+    "File name": "filename",
+    "Test name": "test_name",
+}
+GROUPING_METHODS = {
+    "Use existing column": "existing",
+    "Text mappings (no regex)": "mapping",
+    "Number after prefix (no regex)": "number_after",
+    "Advanced regex": "regex",
+}
+GROUPING_VALUE_TYPES = {"Text": "str", "Integer": "int", "Decimal": "float"}
+
+
+def _split_group_columns(value: Any) -> tuple[str, ...]:
+    return tuple(
+        item.strip()
+        for item in str(value or "").replace("\n", ",").split(",")
+        if item.strip()
+    )
+
+
+def insertion_definitions(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return editable insertion definitions from a persisted profile spec."""
+    raw_insertions = spec.get("insertions", [])
+    if not isinstance(raw_insertions, list):
+        return []
+    return [
+        {
+            "name": str(item.get("name", "")),
+            "group": str(item.get("group", "FE")).upper(),
+            "temperature": str(item.get("temperature", "")),
+            "raw_files": [str(path) for path in item.get("raw_files", [])],
+        }
+        for item in raw_insertions
+        if isinstance(item, dict)
+    ]
+
+
+def validate_insertion_definitions(definitions: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Validate insertion identity and guarantee at least one existing raw data file per insertion."""
+    if not definitions:
+        raise ValueError("Add at least one insertion")
+    validated: list[dict[str, Any]] = []
+    names: set[str] = set()
+    assigned_files: dict[Path, str] = {}
+    for index, definition in enumerate(definitions, start=1):
+        name = str(definition.get("name", "")).strip()
+        group = str(definition.get("group", "")).strip().upper()
+        if not name:
+            raise ValueError(f"Insertion {index} needs a name")
+        if name.casefold() in names:
+            raise ValueError(f"Insertion name '{name}' is duplicated")
+        names.add(name.casefold())
+        if group not in {"FE", "BE"}:
+            raise ValueError(f"Insertion '{name}' must use insertion group FE or BE")
+        try:
+            temperature = float(str(definition.get("temperature", "")).strip())
+        except ValueError as error:
+            raise ValueError(f"Insertion '{name}' needs a numeric temperature in °C") from error
+        if not math.isfinite(temperature):
+            raise ValueError(f"Insertion '{name}' needs a finite numeric temperature in °C")
+        raw_files = [Path(str(path)).expanduser().resolve() for path in definition.get("raw_files", [])]
+        if not raw_files:
+            raise ValueError(f"Insertion '{name}' needs at least one corresponding raw test-data file")
+        missing = [str(path) for path in raw_files if not path.is_file()]
+        if missing:
+            raise ValueError(f"Insertion '{name}' has missing raw test-data files: {missing}")
+        for path in raw_files:
+            previous = assigned_files.get(path)
+            if previous is not None:
+                raise ValueError(f"Raw file '{path.name}' is assigned to both '{previous}' and '{name}'")
+            assigned_files[path] = name
+        validated.append({
+            "name": name,
+            "group": group,
+            "temperature": temperature,
+            "raw_files": [str(path) for path in raw_files],
+        })
+    return validated
+
+
+def grouping_condition_state(spec: Mapping[str, Any]) -> dict[str, tuple[bool, str]]:
+    """Resolve saved and legacy grouping columns into the six GUI categories."""
+    selected = _split_group_columns(spec.get("group_by", ""))
+    state: dict[str, tuple[bool, str]] = {}
+    for option in GROUPING_CONDITION_OPTIONS:
+        saved_column = str(spec.get(f"grouping_{option.key}_column", "")).strip()
+        candidates = (option.default_column, *option.aliases)
+        matched_column = next((column for column in selected if column in candidates), "")
+        column = saved_column or matched_column or option.default_column
+        state[option.key] = (column in selected or bool(matched_column), column)
+    return state
+
+
+def grouping_condition_definitions(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the six standard conditions plus persisted user-defined conditions."""
+    saved = spec.get("grouping_conditions")
+    if isinstance(saved, list):
+        definitions = [
+            dict(item)
+            for item in saved
+            if isinstance(item, dict)
+            and str(item.get("key", "")).casefold() != "temperature"
+            and str(item.get("column", "")).casefold() != "temperature"
+        ]
+        by_key = {str(item.get("key", "")): item for item in definitions}
+        for option in GROUPING_CONDITION_OPTIONS:
+            if option.key not in by_key:
+                definitions.append({
+                    "key": option.key,
+                    "label": option.label,
+                    "column": option.default_column,
+                    "enabled": False,
+                    "source": "existing",
+                    "method": "existing",
+                    "expression": "",
+                    "default": "",
+                    "cast": "str",
+                    "custom": False,
+                })
+        return definitions
+
+    selected = _split_group_columns(spec.get("group_by", ""))
+    state = grouping_condition_state(spec)
+    definitions: list[dict[str, Any]] = []
+    # Temperature is supplied by Insertions and is no longer an editable grouping condition.
+    recognized: set[str] = {"Temperature"}
+    for option in GROUPING_CONDITION_OPTIONS:
+        enabled, column = state[option.key]
+        if enabled:
+            recognized.add(column)
+        definitions.append({
+            "key": option.key,
+            "label": option.label,
+            "column": column,
+            "enabled": enabled,
+            "source": "existing",
+            "method": "existing",
+            "expression": "",
+            "default": "",
+            "cast": "str",
+            "custom": False,
+        })
+    for index, column in enumerate((value for value in selected if value not in recognized), start=1):
+        definitions.append({
+            "key": f"custom_{index}",
+            "label": column,
+            "column": column,
+            "enabled": True,
+            "source": "existing",
+            "method": "existing",
+            "expression": "",
+            "default": "",
+            "cast": "str",
+            "custom": True,
+        })
+
+    by_column = {str(item["column"]): item for item in definitions}
+    mapping_lines: dict[str, list[str]] = {}
+    for raw_line in str(spec.get("condition_rules", "")).splitlines():
+        parts = [part.strip() for part in raw_line.split(";")]
+        if len(parts) != 6 or parts[0] not in by_column:
+            continue
+        target, source, _mode, marker, value, default = parts
+        definition = by_column[target]
+        definition.update(source=source, method="mapping", default=default)
+        mapping_lines.setdefault(target, []).append(f"{marker} => {value}")
+    for target, lines in mapping_lines.items():
+        by_column[target]["expression"] = "\n".join(lines)
+
+    for raw_line in str(spec.get("regex_rules", "")).splitlines():
+        parts = [part.strip() for part in raw_line.split(";")]
+        if len(parts) != 6 or parts[0] not in by_column:
+            continue
+        target, source, pattern, _group, cast, default = parts
+        by_column[target].update(
+            source=source,
+            method="regex",
+            expression=pattern,
+            default=default,
+            cast=cast,
+        )
+    return definitions
+
+
+def compile_grouping_conditions(
+    definitions: list[Mapping[str, Any]],
+) -> tuple[tuple[str, ...], str, str]:
+    """Compile guided condition identification into the existing profile rule format."""
+    group_by: list[str] = []
+    condition_lines: list[str] = []
+    regex_lines: list[str] = []
+    for definition in definitions:
+        if not bool(definition.get("enabled")):
+            continue
+        label = str(definition.get("label", "")).strip()
+        column = str(definition.get("column", "")).strip()
+        if not label or not column:
+            raise ValueError("Every enabled grouping condition needs a name and column")
+        if column not in group_by:
+            group_by.append(column)
+        method = str(definition.get("method", "existing"))
+        if method == "existing":
+            continue
+        source = str(definition.get("source", ""))
+        if source not in {"filename", "test_name"}:
+            raise ValueError(f"Grouping condition '{label}' needs File name or Test name as its source")
+        expression = str(definition.get("expression", "")).strip()
+        default = str(definition.get("default", "")).strip()
+        cast = str(definition.get("cast", "str"))
+        if not expression:
+            raise ValueError(f"Grouping condition '{label}' needs an identification rule")
+        if ";" in column or ";" in default:
+            raise ValueError("Grouping columns and defaults cannot contain semicolons")
+        if method == "mapping":
+            for line_number, raw_line in enumerate(expression.splitlines(), start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                separator = "=>" if "=>" in line else "="
+                if separator not in line:
+                    raise ValueError(
+                        f"Mapping line {line_number} for '{label}' must look like HOT => 125"
+                    )
+                marker, value = (part.strip() for part in line.split(separator, 1))
+                if not marker or not value or ";" in marker or ";" in value:
+                    raise ValueError(f"Invalid mapping line {line_number} for '{label}'")
+                condition_lines.append(f"{column} ; {source} ; contains ; {marker} ; {value} ; {default}")
+        elif method == "number_after":
+            escaped_prefix = re.escape(expression)
+            pattern = rf"{escaped_prefix}\s*[_:=\-]?\s*(-?\d+(?:\.\d+)?)"
+            regex_lines.append(f"{column} ; {source} ; {pattern} ; 1 ; {cast} ; {default}")
+        elif method == "regex":
+            try:
+                compiled = re.compile(expression)
+            except re.error as error:
+                raise ValueError(f"Invalid advanced regex for '{label}': {error}") from error
+            if compiled.groups < 1:
+                raise ValueError(f"Advanced regex for '{label}' needs one capture group, for example: CH(\\d+)")
+            regex_lines.append(f"{column} ; {source} ; {expression} ; 1 ; {cast} ; {default}")
+        else:
+            raise ValueError(f"Unknown identification method for '{label}': {method}")
+    if not group_by:
+        raise ValueError("Select at least one grouping condition")
+    return tuple(group_by), "\n".join(condition_lines), "\n".join(regex_lines)
+
+
+def correlation_group_columns(selected: tuple[str, ...]) -> tuple[str, ...]:
+    """Add insertion-derived Temperature once without exposing it as a selectable condition."""
+    return tuple(dict.fromkeys((*selected, "Temperature")))
 
 
 def workbook_sheet_names(path: str | Path) -> tuple[str, ...]:
@@ -32,13 +346,13 @@ def workbook_sheet_names(path: str | Path) -> tuple[str, ...]:
 
 
 class CorrelationDesktopApp:
-    """Four-step Tkinter shell around the pure extraction/correlation engine."""
+    """Five-step Tkinter shell around the pure extraction/correlation engine."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("CV ↔ ATE Correlation")
-        self.root.geometry("1020x690")
-        self.root.minsize(900, 620)
+        self.root.title(APPLICATION_TITLE)
+        self.root.geometry("1180x760")
+        self.root.minsize(1000, 680)
 
         style = ttk.Style(root)
         style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
@@ -57,7 +371,10 @@ class CorrelationDesktopApp:
 
         self._job_results: queue.Queue[tuple[bool, str]] = queue.Queue()
         self._active_button: ttk.Button | None = None
+        self._extraction_profile_combos: list[ttk.Combobox] = []
+        self._correlation_profile_combos: list[ttk.Combobox] = []
 
+        self._build_profile_tab()
         self._build_extraction_tab()
         self._build_request_tab()
         self._build_import_tab()
@@ -99,6 +416,33 @@ class CorrelationDesktopApp:
         )
         combo.grid(row=row, column=1, padx=(0, 8), pady=7, sticky="ew")
         return combo
+
+    def _add_registered_profile_combo(
+        self,
+        form: ttk.Frame,
+        row: int,
+        label: str,
+        variable: tk.StringVar,
+        *,
+        extraction: bool = False,
+    ) -> ttk.Combobox:
+        registry = EXTRACTION_PROFILES if extraction else CORRELATION_PROFILES
+        combo = self._add_combo(form, row, label, variable, sorted(registry), readonly=True)
+        target = self._extraction_profile_combos if extraction else self._correlation_profile_combos
+        target.append(combo)
+        return combo
+
+    def _refresh_profile_choices(self) -> None:
+        extraction_values = sorted(EXTRACTION_PROFILES)
+        correlation_values = sorted(CORRELATION_PROFILES)
+        for combo in self._extraction_profile_combos:
+            combo.configure(values=extraction_values)
+            if combo.get() not in extraction_values and extraction_values:
+                combo.set(extraction_values[0])
+        for combo in self._correlation_profile_combos:
+            combo.configure(values=correlation_values)
+            if combo.get() not in correlation_values and correlation_values:
+                combo.set(correlation_values[0])
 
     def _add_path(
         self,
@@ -211,9 +555,634 @@ class CorrelationDesktopApp:
         else:
             messagebox.showerror("Operation failed", text, parent=self.root)
 
+    def _build_profile_tab(self) -> None:
+        outer = ttk.Frame(self.notebook, padding=18)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(3, weight=1)
+        self.notebook.add(outer, text="1 · Profiles")
+        ttk.Label(outer, text="Create a reusable ATE-to-Lab profile", style="Heading.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            outer,
+            text=(
+                "Define the tests, grouping identification, correlation strategy, guard-band policy, and optional "
+                "covariate. Built-in CTRX8188 profiles remain read-only; custom profiles are available immediately "
+                "in every workflow and in the CLI."
+            ),
+            style="Hint.TLabel",
+            wraplength=900,
+        ).grid(row=1, column=0, pady=(4, 10), sticky="w")
+
+        controls = ttk.Frame(outer)
+        controls.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="Custom profile").grid(row=0, column=0, padx=(0, 10), sticky="w")
+        selected = tk.StringVar()
+        custom_combo = ttk.Combobox(controls, textvariable=selected, state="readonly")
+        custom_combo.grid(row=0, column=1, padx=(0, 8), sticky="ew")
+        ttk.Button(controls, text="Load", command=lambda: load_selected()).grid(row=0, column=2, padx=3)
+        ttk.Button(controls, text="New", command=lambda: clear_editor()).grid(row=0, column=3, padx=3)
+        ttk.Label(controls, text=f"Saved in {profile_store_path()}", style="Hint.TLabel").grid(
+            row=1, column=1, columnspan=3, pady=(5, 0), sticky="w"
+        )
+
+        editor = ttk.Notebook(outer)
+        editor.grid(row=3, column=0, sticky="nsew")
+        insertions_page = ttk.Frame(editor, padding=12)
+        basics = ttk.Frame(editor, padding=12)
+        correlation = ttk.Frame(editor, padding=12)
+        editor.add(insertions_page, text="Insertions")
+        editor.add(basics, text="Identity & Tests")
+        editor.add(correlation, text="Correlation & Guard-Band")
+        for page in (insertions_page, basics, correlation):
+            page.columnconfigure(1, weight=1)
+
+        defaults = {
+            "profile_id": "",
+            "display_name": "",
+            "tests": "",
+            "group_by": "Test Number",
+            "strategy": "median_offset",
+            "reference_column": "CV Value",
+            "candidate_column": "Test Value",
+            "minimum_points": "5",
+            "detail_key_columns": "DUT Nr, Wafer, X, Y",
+            "additional_output_columns": "",
+            "coordinate_columns": "WAFER, X, Y",
+            "coordinate_fallback": "WAFER=62007, X=62008, Y=62009",
+            "insertion_field": "Insertion Type",
+            "fallback_insertion_values": "BE",
+            "lower_limit_column": "Low",
+            "upper_limit_column": "High",
+            "unit_column": "Unit",
+            "test_name_column": "Test Name",
+            "guard_band_kind": "distribution_sigma",
+            "sigma_multiplier": "6.0",
+            "covariate_value_column": "",
+            "covariate_merge_keys": "",
+            "covariate_output_name": "Covariate",
+        }
+        variables = {key: tk.StringVar(value=value) for key, value in defaults.items()}
+        self._profile_editor_vars = variables
+
+        configured_insertions: list[dict[str, Any]] = insertion_definitions(defaults)
+        selected_insertion = tk.StringVar()
+        insertion_name = tk.StringVar()
+        insertion_group = tk.StringVar(value="FE")
+        insertion_temperature = tk.StringVar()
+        current_insertion = {"index": -1, "loading": False}
+
+        ttk.Label(
+            insertions_page,
+            text=(
+                "Define every test insertion before selecting tests. Each insertion belongs to the fixed FE or BE "
+                "group, has one test temperature, and must have at least one assigned raw data file."
+            ),
+            style="Hint.TLabel",
+            wraplength=900,
+        ).grid(row=0, column=0, columnspan=3, pady=(0, 10), sticky="w")
+        self._add_label(insertions_page, 1, "Insertion")
+        insertion_combo = ttk.Combobox(insertions_page, textvariable=selected_insertion, state="readonly")
+        insertion_combo.grid(row=1, column=1, padx=(0, 8), pady=6, sticky="ew")
+        insertion_buttons = ttk.Frame(insertions_page)
+        insertion_buttons.grid(row=1, column=2, sticky="w")
+
+        self._add_label(insertions_page, 2, "Insertion name")
+        ttk.Entry(insertions_page, textvariable=insertion_name).grid(
+            row=2, column=1, padx=(0, 8), pady=6, sticky="ew"
+        )
+        ttk.Label(
+            insertions_page,
+            text="Name identifying this insertion; for example: S1, S2, RT, or HT.",
+            style="Hint.TLabel",
+        ).grid(row=2, column=2, sticky="w")
+
+        self._add_combo(
+            insertions_page, 3, "Insertion group", insertion_group, ("FE", "BE"), readonly=True,
+        )
+        self._add_label(insertions_page, 4, "Temperature (°C)")
+        ttk.Entry(insertions_page, textvariable=insertion_temperature).grid(
+            row=4, column=1, padx=(0, 8), pady=6, sticky="ew"
+        )
+        ttk.Label(
+            insertions_page,
+            text="Test temperature corresponding to this insertion; for example: -40, 25, or 135.",
+            style="Hint.TLabel",
+        ).grid(row=4, column=2, sticky="w")
+
+        self._add_label(insertions_page, 5, "Raw test data")
+        insertion_files = tk.Listbox(insertions_page, height=9, selectmode="extended")
+        insertion_files.grid(row=5, column=1, padx=(0, 8), pady=6, sticky="nsew")
+        insertions_page.rowconfigure(5, weight=1)
+        file_buttons = ttk.Frame(insertions_page)
+        file_buttons.grid(row=5, column=2, sticky="nw")
+        ttk.Label(
+            file_buttons,
+            text="Assign one or more corresponding raw CSV files. Saving checks that every insertion has an existing file.",
+            style="Hint.TLabel",
+            wraplength=330,
+        ).pack(anchor="w", pady=(8, 0))
+
+        def store_current_insertion() -> None:
+            if current_insertion["loading"] or current_insertion["index"] < 0:
+                return
+            configured_insertions[int(current_insertion["index"])].update({
+                "name": insertion_name.get().strip(),
+                "group": insertion_group.get(),
+                "temperature": insertion_temperature.get().strip(),
+                "raw_files": list(insertion_files.get(0, "end")),
+            })
+
+        def insertion_selector_values() -> tuple[str, ...]:
+            return tuple(
+                f"{item.get('group', 'FE')} · {item.get('name') or 'Unnamed'} · "
+                f"{item.get('temperature') or '?'} °C · {len(item.get('raw_files', []))} file(s)"
+                for item in configured_insertions
+            )
+
+        def load_insertion(index: int) -> None:
+            definition = configured_insertions[index]
+            current_insertion.update(index=index, loading=True)
+            insertion_combo.configure(values=insertion_selector_values())
+            insertion_combo.current(index)
+            insertion_name.set(str(definition.get("name", "")))
+            insertion_group.set(str(definition.get("group", "FE")))
+            insertion_temperature.set(str(definition.get("temperature", "")))
+            insertion_files.delete(0, "end")
+            for path in definition.get("raw_files", []):
+                insertion_files.insert("end", str(path))
+            current_insertion["loading"] = False
+
+        def choose_insertion(_event: object | None = None) -> None:
+            selected_index = max(insertion_combo.current(), 0)
+            store_current_insertion()
+            load_insertion(selected_index)
+
+        def add_insertion() -> None:
+            store_current_insertion()
+            configured_insertions.append({
+                "name": f"Insertion {len(configured_insertions) + 1}",
+                "group": "FE",
+                "temperature": "25",
+                "raw_files": [],
+            })
+            load_insertion(len(configured_insertions) - 1)
+
+        def remove_insertion() -> None:
+            if current_insertion["index"] < 0:
+                return
+            del configured_insertions[int(current_insertion["index"])]
+            if configured_insertions:
+                load_insertion(min(int(current_insertion["index"]), len(configured_insertions) - 1))
+            else:
+                current_insertion["index"] = -1
+                insertion_combo.configure(values=())
+                selected_insertion.set("")
+                insertion_name.set("")
+                insertion_temperature.set("")
+                insertion_files.delete(0, "end")
+
+        def browse_insertion_files() -> None:
+            files = filedialog.askopenfilenames(
+                parent=self.root,
+                title=f"Select raw test data for {insertion_name.get() or 'insertion'}",
+                filetypes=[("Raw TE CSV files", "*.csv"), ("All files", "*.*")],
+            )
+            existing = set(insertion_files.get(0, "end"))
+            for path in files:
+                if path not in existing:
+                    insertion_files.insert("end", path)
+                    existing.add(path)
+
+        def remove_selected_insertion_files() -> None:
+            for index in reversed(insertion_files.curselection()):
+                insertion_files.delete(index)
+
+        ttk.Button(insertion_buttons, text="Add…", command=add_insertion).pack(side="left", padx=3)
+        ttk.Button(insertion_buttons, text="Remove", command=remove_insertion).pack(side="left", padx=3)
+        ttk.Button(file_buttons, text="Browse…", command=browse_insertion_files).pack(anchor="w", pady=3)
+        ttk.Button(file_buttons, text="Remove selected", command=remove_selected_insertion_files).pack(
+            anchor="w", pady=3
+        )
+        insertion_combo.bind("<<ComboboxSelected>>", choose_insertion)
+        self._profile_insertions = configured_insertions
+
+        def add_entry(page: ttk.Frame, row: int, label: str, key: str, hint: str) -> None:
+            self._add_label(page, row, label)
+            ttk.Entry(page, textvariable=variables[key]).grid(
+                row=row, column=1, padx=(0, 8), pady=6, sticky="ew"
+            )
+            ttk.Label(page, text=hint, style="Hint.TLabel", wraplength=360).grid(
+                row=row, column=2, pady=6, sticky="w"
+            )
+
+        add_entry(basics, 0, "Profile ID", "profile_id", "Lowercase ID; for example: my-dc-current.")
+        add_entry(
+            basics, 1, "Display name", "display_name",
+            "Human-readable name shown in reports; for example: PMIC leakage at hot.",
+        )
+        add_entry(
+            basics, 2, "Tests", "tests",
+            "Exact numbers, inclusive ranges, or name fragments; for example: 101, 1200-1299, LeakageCurrent.",
+        )
+
+        self._add_label(basics, 3, "Grouping conditions")
+        grouping_frame = ttk.LabelFrame(basics, text="Condition and identification", padding=8)
+        grouping_frame.grid(row=3, column=1, columnspan=2, padx=(0, 8), pady=6, sticky="ew")
+        grouping_frame.columnconfigure(1, weight=1)
+        grouping_definitions = grouping_condition_definitions(defaults)
+        condition_selector = tk.StringVar()
+        condition_enabled = tk.BooleanVar()
+        condition_label = tk.StringVar()
+        condition_column = tk.StringVar()
+        condition_source = tk.StringVar(value="Existing input column")
+        condition_method = tk.StringVar(value="Use existing column")
+        condition_default = tk.StringVar()
+        condition_cast = tk.StringVar(value="Text")
+        condition_rule_hint = tk.StringVar()
+        current_condition = {"index": 0, "loading": False}
+
+        self._add_label(grouping_frame, 0, "Condition")
+        condition_combo = ttk.Combobox(grouping_frame, textvariable=condition_selector, state="readonly")
+        condition_combo.grid(row=0, column=1, padx=(0, 8), pady=4, sticky="ew")
+        condition_buttons = ttk.Frame(grouping_frame)
+        condition_buttons.grid(row=0, column=2, sticky="e")
+
+        ttk.Checkbutton(grouping_frame, text="Enabled for this profile", variable=condition_enabled).grid(
+            row=1, column=1, pady=4, sticky="w"
+        )
+        ttk.Label(
+            grouping_frame,
+            text="Enable only the dimensions that define separate correlation groups.",
+            style="Hint.TLabel",
+        ).grid(row=1, column=2, sticky="w")
+
+        self._add_label(grouping_frame, 2, "Condition name")
+        condition_label_entry = ttk.Entry(grouping_frame, textvariable=condition_label)
+        condition_label_entry.grid(row=2, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            grouping_frame,
+            text="Displayed meaning; for example: Frequency, Channel, Bias Mode.",
+            style="Hint.TLabel",
+        ).grid(row=2, column=2, sticky="w")
+
+        self._add_label(grouping_frame, 3, "Output/input column")
+        ttk.Entry(grouping_frame, textvariable=condition_column).grid(
+            row=3, column=1, padx=(0, 8), pady=4, sticky="ew"
+        )
+        ttk.Label(
+            grouping_frame,
+            text="Column used for grouping; for example: Frequency_GHz, PA Channel, LUT value.",
+            style="Hint.TLabel",
+        ).grid(row=3, column=2, sticky="w")
+
+        source_combo = self._add_combo(
+            grouping_frame, 4, "Identification source", condition_source,
+            tuple(GROUPING_SOURCES), readonly=True,
+        )
+        self._add_combo(
+            grouping_frame, 5, "Identification method", condition_method,
+            tuple(GROUPING_METHODS), readonly=True,
+        )
+
+        self._add_label(grouping_frame, 6, "Identification rule")
+        condition_expression = tk.Text(grouping_frame, height=4, wrap="none", font=("Consolas", 9))
+        condition_expression.grid(row=6, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            grouping_frame,
+            textvariable=condition_rule_hint,
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=6, column=2, sticky="nw")
+
+        self._add_label(grouping_frame, 7, "Default value")
+        condition_default_entry = ttk.Entry(grouping_frame, textvariable=condition_default)
+        condition_default_entry.grid(row=7, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            grouping_frame,
+            text="Used when no identification matches; for example: Unknown, ALL, or 25.",
+            style="Hint.TLabel",
+        ).grid(row=7, column=2, sticky="w")
+        cast_combo = self._add_combo(
+            grouping_frame, 8, "Identified value type", condition_cast,
+            tuple(GROUPING_VALUE_TYPES), readonly=True,
+        )
+
+        def method_hint(method: str) -> str:
+            return {
+                "Use existing column": "No rule needed: CorreLaTE reads the selected input column directly.",
+                "Text mappings (no regex)": (
+                    "One literal mapping per line; for example:\nHOT => 125\nRT => 25\n095 => VMIN"
+                ),
+                "Number after prefix (no regex)": (
+                    "Enter only the text before the number; for example: FwLu extracts 255 from FwLu255."
+                ),
+                "Advanced regex": (
+                    r"Optional expert mode. Use one capture group; for example: CH(\d+) extracts 3 from CH3."
+                ),
+            }[method]
+
+        def update_identification_controls(*_args: object) -> None:
+            existing = condition_method.get() == "Use existing column"
+            if existing:
+                condition_source.set("Existing input column")
+            elif condition_source.get() == "Existing input column":
+                condition_source.set("Test name")
+            source_combo.configure(state="disabled" if existing else "readonly")
+            condition_expression.configure(state="disabled" if existing else "normal")
+            condition_default_entry.configure(state="disabled" if existing else "normal")
+            cast_combo.configure(
+                state="readonly" if condition_method.get() in {"Number after prefix (no regex)", "Advanced regex"}
+                else "disabled"
+            )
+            condition_rule_hint.set(method_hint(condition_method.get()))
+
+        def store_current_condition() -> None:
+            if current_condition["loading"] or not grouping_definitions:
+                return
+            index = int(current_condition["index"])
+            definition = grouping_definitions[index]
+            definition.update({
+                "enabled": condition_enabled.get(),
+                "label": condition_label.get().strip(),
+                "column": condition_column.get().strip(),
+                "source": GROUPING_SOURCES[condition_source.get()],
+                "method": GROUPING_METHODS[condition_method.get()],
+                "expression": condition_expression.get("1.0", "end-1c").strip(),
+                "default": condition_default.get().strip(),
+                "cast": GROUPING_VALUE_TYPES[condition_cast.get()],
+            })
+
+        def condition_selector_values() -> tuple[str, ...]:
+            return tuple(
+                f"{'✓' if item.get('enabled') else '○'} {item.get('label') or 'Unnamed condition'}"
+                for item in grouping_definitions
+            )
+
+        def load_condition(index: int) -> None:
+            definition = grouping_definitions[index]
+            current_condition.update(index=index, loading=True)
+            condition_combo.configure(values=condition_selector_values())
+            condition_combo.current(index)
+            condition_enabled.set(bool(definition.get("enabled")))
+            condition_label.set(str(definition.get("label", "")))
+            condition_column.set(str(definition.get("column", "")))
+            condition_source.set(next(
+                label for label, value in GROUPING_SOURCES.items()
+                if value == str(definition.get("source", "existing"))
+            ))
+            condition_method.set(next(
+                label for label, value in GROUPING_METHODS.items()
+                if value == str(definition.get("method", "existing"))
+            ))
+            condition_default.set(str(definition.get("default", "")))
+            condition_cast.set(next(
+                label for label, value in GROUPING_VALUE_TYPES.items()
+                if value == str(definition.get("cast", "str"))
+            ))
+            condition_expression.configure(state="normal")
+            condition_expression.delete("1.0", "end")
+            condition_expression.insert("1.0", str(definition.get("expression", "")))
+            current_condition["loading"] = False
+            update_identification_controls()
+            condition_label_entry.configure(state="normal" if definition.get("custom") else "disabled")
+
+        def choose_condition(_event: object | None = None) -> None:
+            store_current_condition()
+            load_condition(max(condition_combo.current(), 0))
+
+        def add_condition() -> None:
+            store_current_condition()
+            next_index = 1 + sum(bool(item.get("custom")) for item in grouping_definitions)
+            grouping_definitions.append({
+                "key": f"custom_{next_index}",
+                "label": f"Custom Condition {next_index}",
+                "column": f"Custom Condition {next_index}",
+                "enabled": True,
+                "source": "test_name",
+                "method": "mapping",
+                "expression": "",
+                "default": "Unknown",
+                "cast": "str",
+                "custom": True,
+            })
+            load_condition(len(grouping_definitions) - 1)
+
+        def remove_condition() -> None:
+            index = int(current_condition["index"])
+            if not bool(grouping_definitions[index].get("custom")):
+                messagebox.showinfo(
+                    "Standard grouping condition",
+                    "Standard conditions can be disabled but not removed.",
+                    parent=self.root,
+                )
+                return
+            del grouping_definitions[index]
+            load_condition(min(index, len(grouping_definitions) - 1))
+
+        ttk.Button(condition_buttons, text="Add…", command=add_condition).pack(side="left", padx=3)
+        ttk.Button(condition_buttons, text="Remove", command=remove_condition).pack(side="left", padx=3)
+        condition_combo.bind("<<ComboboxSelected>>", choose_condition)
+        condition_method.trace_add("write", update_identification_controls)
+        load_condition(0)
+
+        self._profile_grouping_definitions = grouping_definitions
+        self._add_combo(
+            basics,
+            4,
+            "Correlation strategy",
+            variables["strategy"],
+            ("median_offset", "mean_delta"),
+            readonly=True,
+        )
+        add_entry(
+            basics, 5, "Lab/reference column", "reference_column",
+            "Column containing the Lab/CV result; for example: Lab Current or CV_PA_Power.",
+        )
+        add_entry(
+            basics, 6, "ATE/candidate column", "candidate_column",
+            "Column containing the ATE result; for example: Test Value or ATE_PA_Power.",
+        )
+        add_entry(
+            basics, 7, "Minimum points/group", "minimum_points",
+            "Smallest sample count accepted for one correlation group; for example: 5.",
+        )
+        add_entry(
+            basics, 8, "Detail key columns", "detail_key_columns",
+            "Identifiers retained in row-level output; for example: DUT Nr, Wafer, X, Y.",
+        )
+
+        add_entry(
+            correlation, 0, "Lower limit column", "lower_limit_column",
+            "Input column holding original lower limits; for example: Low or LSL.",
+        )
+        add_entry(
+            correlation, 1, "Upper limit column", "upper_limit_column",
+            "Input column holding original upper limits; for example: High or USL.",
+        )
+        add_entry(
+            correlation, 2, "Unit column", "unit_column",
+            "Input column holding measurement units; for example: Unit with values dBm, V, or A.",
+        )
+        add_entry(
+            correlation, 3, "Test-name column", "test_name_column",
+            "Input column holding descriptive test names; for example: Test Name.",
+        )
+        self._add_combo(
+            correlation,
+            4,
+            "Guard-band policy",
+            variables["guard_band_kind"],
+            ("distribution_sigma", "shifted_upper_limit"),
+            readonly=True,
+        )
+        add_entry(
+            correlation, 5, "Sigma multiplier", "sigma_multiplier",
+            "Distribution width applied around the corrected mean; for example: 6 for ±6σ.",
+        )
+        ttk.Separator(correlation).grid(row=6, column=0, columnspan=3, pady=10, sticky="ew")
+        add_entry(
+            correlation, 7, "Covariate value column", "covariate_value_column",
+            "Optional lookup value used by the fitted model; for example: Test Value containing Kf.",
+        )
+        add_entry(
+            correlation, 8, "Covariate merge keys", "covariate_merge_keys",
+            "Columns joining lookup and correlation rows; for example: DUT Nr, Temperature.",
+        )
+        add_entry(
+            correlation, 9, "Covariate output name", "covariate_output_name",
+            "Name assigned to the merged value; for example: Kf or Process Monitor.",
+        )
+        ttk.Label(
+            correlation,
+            text="Leave both covariate value and merge keys empty for an offset-only profile.",
+            style="Hint.TLabel",
+        ).grid(row=10, column=1, columnspan=2, sticky="w")
+
+        actions = ttk.Frame(outer)
+        actions.grid(row=4, column=0, pady=(12, 0), sticky="e")
+
+        def apply_grouping_definitions(spec: Mapping[str, Any]) -> None:
+            grouping_definitions[:] = grouping_condition_definitions(spec)
+            load_condition(0)
+
+        def apply_insertions(spec: Mapping[str, Any]) -> None:
+            configured_insertions[:] = insertion_definitions(spec)
+            if configured_insertions:
+                load_insertion(0)
+            else:
+                current_insertion["index"] = -1
+                insertion_combo.configure(values=())
+                selected_insertion.set("")
+                insertion_name.set("")
+                insertion_temperature.set("")
+                insertion_files.delete(0, "end")
+
+        def refresh_custom_list(preferred: str = "") -> None:
+            try:
+                names = sorted(load_custom_profile_specs())
+            except ValueError as error:
+                custom_combo.configure(values=())
+                selected.set("")
+                self.status.set(f"Profile store error: {error}")
+                return
+            custom_combo.configure(values=names)
+            if preferred in names:
+                selected.set(preferred)
+            elif names:
+                selected.set(names[0])
+            else:
+                selected.set("")
+
+        def clear_editor() -> None:
+            selected.set("")
+            for key, default in defaults.items():
+                variables[key].set(default)
+            apply_insertions(defaults)
+            apply_grouping_definitions(defaults)
+            variables["profile_id"].set("")
+            variables["display_name"].set("")
+            variables["tests"].set("")
+            editor.select(insertions_page)
+
+        def load_selected() -> None:
+            profile_id = selected.get().strip()
+            if not profile_id:
+                messagebox.showinfo("Custom profiles", "No custom profile is selected.", parent=self.root)
+                return
+            try:
+                spec = load_custom_profile_specs()[profile_id]
+            except Exception as error:
+                messagebox.showerror("Cannot load profile", str(error), parent=self.root)
+                return
+            for key, default in defaults.items():
+                variables[key].set(str(spec.get(key, default)))
+            apply_insertions(spec)
+            apply_grouping_definitions(spec)
+            variables["profile_id"].set(profile_id)
+            editor.select(insertions_page)
+
+        def save_profile() -> None:
+            profile_id = variables["profile_id"].get().strip()
+            spec = {key: variable.get().strip() for key, variable in variables.items() if key != "profile_id"}
+            try:
+                store_current_insertion()
+                spec["insertions"] = validate_insertion_definitions(configured_insertions)
+                store_current_condition()
+                group_by, condition_rules, regex_rules = compile_grouping_conditions(grouping_definitions)
+                spec["group_by"] = ", ".join(correlation_group_columns(group_by))
+                spec["condition_rules"] = condition_rules
+                spec["regex_rules"] = regex_rules
+                spec["grouping_conditions"] = [dict(definition) for definition in grouping_definitions]
+                save_custom_profile_spec(profile_id, spec)
+                refresh_profiles(strict=True)
+                self._refresh_profile_choices()
+                refresh_custom_list(profile_id)
+            except Exception as error:
+                messagebox.showerror("Cannot save profile", str(error), parent=self.root)
+                return
+            self.status.set(f"Saved custom profile '{profile_id}'")
+            messagebox.showinfo(
+                "Profile saved",
+                f"'{profile_id}' is now available in all CorreLaTE workflows and CLI commands.",
+                parent=self.root,
+            )
+
+        def remove_profile() -> None:
+            profile_id = selected.get().strip() or variables["profile_id"].get().strip()
+            if not profile_id:
+                messagebox.showinfo("Custom profiles", "No custom profile is selected.", parent=self.root)
+                return
+            if profile_id in builtin_profile_ids():
+                messagebox.showerror("Read-only profile", "Built-in profiles cannot be deleted.", parent=self.root)
+                return
+            if not messagebox.askyesno(
+                "Delete custom profile",
+                f"Delete '{profile_id}'?",
+                parent=self.root,
+            ):
+                return
+            try:
+                if not delete_custom_profile(profile_id):
+                    raise ValueError(f"Custom profile '{profile_id}' does not exist")
+                refresh_profiles(strict=True)
+                self._refresh_profile_choices()
+                refresh_custom_list()
+                clear_editor()
+            except Exception as error:
+                messagebox.showerror("Cannot delete profile", str(error), parent=self.root)
+                return
+            self.status.set(f"Deleted custom profile '{profile_id}'")
+
+        ttk.Button(actions, text="Delete", command=remove_profile).pack(side="left", padx=4)
+        ttk.Button(actions, text="Validate & Save", command=save_profile).pack(side="left", padx=4)
+        custom_combo.bind("<<ComboboxSelected>>", lambda _event: load_selected())
+        refresh_custom_list()
+
     def _build_extraction_tab(self) -> None:
         form = self._make_tab(
-            "1 · Extract TE",
+            "2 · Extract TE",
             "Extract normalized ATE measurements",
             "Streams legacy wide TE CSV files, filters the selected devices and tests, and writes Extracted_Data.",
         )
@@ -221,11 +1190,11 @@ class CorrelationDesktopApp:
         raw_folder = tk.StringVar()
         chip_manifest = tk.StringVar()
         output = tk.StringVar()
-        self._add_combo(form, 0, "Extraction profile", profile, sorted(EXTRACTION_PROFILES), readonly=True)
-        self._add_path(
+        self._add_registered_profile_combo(form, 0, "Extraction profile", profile, extraction=True)
+        raw_entry, raw_button = self._add_path(
             form,
             1,
-            "Raw TE folder",
+            "Raw TE folder (built-ins)",
             raw_folder,
             lambda: self._choose_folder(raw_folder, "Select raw TE data folder"),
             button_text="Select…",
@@ -252,12 +1221,16 @@ class CorrelationDesktopApp:
                 "chip manifest": chip_manifest.get(),
                 "output workbook": output.get(),
             }
-            if not self._validate_required(**values):
+            required = {key: value for key, value in values.items() if key != "raw TE folder"}
+            selected_profile = get_extraction_profile(values["profile"])
+            if not selected_profile.insertions:
+                required["raw TE folder"] = values["raw TE folder"]
+            if not self._validate_required(**required):
                 return
 
             def action() -> str:
                 frame = LegacyWideTeCsvAdapter().extract(
-                    Path(values["raw TE folder"]),
+                    Path(values["raw TE folder"] or "."),
                     Path(values["chip manifest"]),
                     get_extraction_profile(values["profile"]),
                 )
@@ -268,12 +1241,24 @@ class CorrelationDesktopApp:
 
             self._start_job(run_button, "Extracting raw TE data…", action)
 
+        def update_raw_folder_state(*_args: object) -> None:
+            uses_assigned_files = bool(get_extraction_profile(profile.get()).insertions)
+            state = ["disabled"] if uses_assigned_files else ["!disabled"]
+            raw_entry.state(state)
+            raw_button.state(state)
+            if uses_assigned_files:
+                raw_folder.set("Files assigned in profile Insertions")
+            elif raw_folder.get() == "Files assigned in profile Insertions":
+                raw_folder.set("")
+
         run_button = ttk.Button(form, text="Run extraction", command=run)
         run_button.grid(row=4, column=1, pady=(18, 0), sticky="e")
+        profile.trace_add("write", update_raw_folder_state)
+        update_raw_folder_state()
 
     def _build_request_tab(self) -> None:
         form = self._make_tab(
-            "2 · Create CV Request",
+            "3 · Create CV Request",
             "Create a protected CV measurement request",
             "The editable request excludes ATE values. A separate internal manifest retains ATE data for one-to-one alignment.",
         )
@@ -283,7 +1268,7 @@ class CorrelationDesktopApp:
         value_column = tk.StringVar(value="Test Value")
         request_output = tk.StringVar()
         manifest_output = tk.StringVar()
-        self._add_combo(form, 0, "Correlation profile", profile, sorted(CORRELATION_PROFILES), readonly=True)
+        self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
         sheet_combo = self._add_combo(form, 2, "Input sheet", sheet, ())
         self._add_path(
             form,
@@ -294,6 +1279,12 @@ class CorrelationDesktopApp:
         )
         self._add_label(form, 3, "ATE value column")
         ttk.Entry(form, textvariable=value_column).grid(row=3, column=1, padx=(0, 8), pady=7, sticky="ew")
+        ttk.Label(
+            form,
+            text="Column containing the extracted ATE measurements; for example: Test Value.",
+            style="Hint.TLabel",
+            wraplength=300,
+        ).grid(row=3, column=2, pady=7, sticky="w")
         self._add_path(
             form,
             4,
@@ -346,7 +1337,7 @@ class CorrelationDesktopApp:
 
     def _build_import_tab(self) -> None:
         form = self._make_tab(
-            "3 · Import CV Results",
+            "4 · Import CV Results",
             "Validate and align returned CV measurements",
             "Rejects duplicate, missing, or unknown request keys and merges only validated CV values into the ATE manifest.",
         )
@@ -356,7 +1347,7 @@ class CorrelationDesktopApp:
         manifest = tk.StringVar()
         manifest_sheet = tk.StringVar(value=MANIFEST_SHEET)
         output = tk.StringVar()
-        self._add_combo(form, 0, "Correlation profile", profile, sorted(CORRELATION_PROFILES), readonly=True)
+        self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
         returned_combo = self._add_combo(form, 2, "Returned sheet", returned_sheet, ())
         self._add_path(
             form,
@@ -413,7 +1404,7 @@ class CorrelationDesktopApp:
 
     def _build_correlation_tab(self) -> None:
         form = self._make_tab(
-            "4 · Correlate",
+            "5 · Correlate",
             "Generate factors, guard-bands, report, and plots",
             "Uses the shared engine. Covariate fields are enabled only for profiles that require them.",
         )
@@ -425,7 +1416,7 @@ class CorrelationDesktopApp:
         report = tk.StringVar()
         plots = tk.StringVar()
         covariate_hint = tk.StringVar()
-        self._add_combo(form, 0, "Correlation profile", profile, sorted(CORRELATION_PROFILES), readonly=True)
+        self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
         sheet_combo = self._add_combo(form, 2, "Input sheet", sheet, ())
         self._add_path(
             form,
@@ -523,3 +1514,7 @@ def launch() -> None:
     root = tk.Tk()
     CorrelationDesktopApp(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    launch()

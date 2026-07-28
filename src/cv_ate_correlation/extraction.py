@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from .models import DerivedField, ExtractionProfile, RegexField
+from .models import DerivedField, ExtractionProfile, InsertionProfile, RegexField
 
 
 def _normalize_wafer(value: Any) -> str:
@@ -32,6 +32,10 @@ def _parse_number(value: Any) -> Any:
     if math.isfinite(number) and number.is_integer():
         return int(number)
     return number
+
+
+def _is_missing(value: Any) -> bool:
+    return str(value).strip().lower() in {"", "nan", "none"}
 
 
 def _derive(rule: DerivedField, *, filename: str, test_name: str) -> Any:
@@ -118,11 +122,31 @@ class LegacyWideTeCsvAdapter:
     def extract(self, input_folder: Path, chip_manifest: Path, profile: ExtractionProfile) -> pd.DataFrame:
         chips, chip_metadata = read_chip_manifest(chip_manifest)
         rows: list[dict[str, Any]] = []
-        files = sorted(input_folder.glob("*.csv"))
+        insertion_by_path: dict[Path, InsertionProfile] = {}
+        if profile.insertions:
+            files: list[Path] = []
+            missing_files: list[str] = []
+            for insertion in profile.insertions:
+                for raw_file in insertion.raw_files:
+                    path = Path(raw_file).expanduser()
+                    if not path.is_absolute():
+                        path = input_folder / path
+                    path = path.resolve()
+                    if not path.is_file():
+                        missing_files.append(str(path))
+                        continue
+                    files.append(path)
+                    insertion_by_path[path] = insertion
+            if missing_files:
+                raise FileNotFoundError(f"Configured insertion files do not exist: {missing_files}")
+            files = sorted(dict.fromkeys(files))
+        else:
+            files = sorted(input_folder.glob("*.csv"))
         if not files:
             raise FileNotFoundError(f"No CSV files found in {input_folder}")
         for path in files:
-            rows.extend(self._extract_file(path, chips, chip_metadata, profile))
+            insertion = insertion_by_path.get(path.resolve())
+            rows.extend(self._extract_file(path, chips, chip_metadata, profile, insertion))
         if not rows:
             raise ValueError("No data matched the selected chips and tests")
         frame = pd.DataFrame(rows)
@@ -134,6 +158,7 @@ class LegacyWideTeCsvAdapter:
         chips: set[tuple[str, int, int]],
         metadata: dict[tuple[str, int, int], dict[str, str]],
         profile: ExtractionProfile,
+        insertion: InsertionProfile | None = None,
     ) -> Iterable[dict[str, Any]]:
         with path.open("r", encoding="latin1", errors="ignore", newline="") as handle:
             reader = csv.reader(handle, delimiter=";")
@@ -148,10 +173,6 @@ class LegacyWideTeCsvAdapter:
 
             header, names, lows, highs, units = physical_rows[:5]
             index_by_name = {str(value).strip().upper(): index for index, value in enumerate(header)}
-            try:
-                wafer_index, x_index, y_index = (index_by_name[name.upper()] for name in profile.coordinate_columns)
-            except KeyError:
-                return []
 
             file_values = {
                 rule.target: _derive(rule, filename=path.name, test_name="")
@@ -164,13 +185,35 @@ class LegacyWideTeCsvAdapter:
             for field, value_map in profile.derived_value_maps.items():
                 if field in file_values:
                     file_values[field] = value_map.get(file_values[field], file_values[field])
+            if insertion is not None:
+                file_values[profile.insertion_field] = insertion.group
+                file_values["Insertion"] = insertion.name
+                file_values["Temperature"] = insertion.temperature
 
             fallback_indexes: dict[str, int] = {}
-            if file_values.get(profile.insertion_field) in profile.fallback_insertion_values:
+            insertion_value = str(file_values.get(profile.insertion_field, "")).strip().casefold()
+            fallback_values = {
+                str(value).strip().casefold() for value in profile.fallback_insertion_values
+            }
+            if insertion_value in fallback_values:
                 for coordinate, test_number in profile.coordinate_fallback.items():
-                    index = index_by_name.get(str(test_number).upper())
+                    normalized_test_number = str(test_number).strip().upper()
+                    index = index_by_name.get(normalized_test_number)
+                    if index is None and normalized_test_number.isdigit():
+                        index = index_by_name.get(f"TN{normalized_test_number}")
                     if index is not None:
                         fallback_indexes[coordinate.upper()] = index
+
+            coordinate_indexes = tuple(
+                index_by_name.get(name.upper()) for name in profile.coordinate_columns
+            )
+            required_coordinates = tuple(name.upper() for name in profile.coordinate_columns)
+            if any(
+                primary_index is None and coordinate not in fallback_indexes
+                for coordinate, primary_index in zip(required_coordinates, coordinate_indexes)
+            ):
+                return []
+            wafer_index, x_index, y_index = coordinate_indexes
 
             selected: list[tuple[int, int, str]] = []
             for index, cell in enumerate(header):
@@ -191,11 +234,11 @@ class LegacyWideTeCsvAdapter:
 
                 wafer = _normalize_wafer(get(wafer_index))
                 x_raw, y_raw = get(x_index), get(y_index)
-                if (not wafer or wafer.lower() == "nan") and "WAFER" in fallback_indexes:
+                if _is_missing(wafer) and "WAFER" in fallback_indexes:
                     wafer = _normalize_wafer(get(fallback_indexes["WAFER"]))
-                if not x_raw and "X" in fallback_indexes:
+                if _is_missing(x_raw) and "X" in fallback_indexes:
                     x_raw = get(fallback_indexes["X"])
-                if not y_raw and "Y" in fallback_indexes:
+                if _is_missing(y_raw) and "Y" in fallback_indexes:
                     y_raw = get(fallback_indexes["Y"])
                 try:
                     x_value, y_value = int(float(x_raw)), int(float(y_raw))
@@ -230,5 +273,9 @@ class LegacyWideTeCsvAdapter:
                     for rule in profile.regex_fields:
                         if rule.source == "test_name":
                             record[rule.target] = _extract_regex(rule, filename=path.name, test_name=test_name)
+                    if insertion is not None:
+                        record[profile.insertion_field] = insertion.group
+                        record["Insertion"] = insertion.name
+                        record["Temperature"] = insertion.temperature
                     output.append(record)
             return output

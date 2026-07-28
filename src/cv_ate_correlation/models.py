@@ -6,6 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 
+DEFAULT_COORDINATE_FALLBACK: Mapping[str, str] = {
+    "WAFER": "62007",
+    "X": "62008",
+    "Y": "62009",
+}
+
+
 @dataclass(frozen=True)
 class TestSelector:
     exact: tuple[int, ...] = ()
@@ -47,6 +54,14 @@ class RegexField:
 
 
 @dataclass(frozen=True)
+class InsertionProfile:
+    name: str
+    group: Literal["FE", "BE"]
+    temperature: float
+    raw_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ExtractionProfile:
     name: str
     selector: TestSelector
@@ -54,11 +69,14 @@ class ExtractionProfile:
     derived_fields: tuple[DerivedField, ...] = ()
     regex_fields: tuple[RegexField, ...] = ()
     coordinate_columns: tuple[str, str, str] = ("WAFER", "X", "Y")
-    coordinate_fallback: Mapping[str, str] = field(default_factory=dict)
+    coordinate_fallback: Mapping[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_COORDINATE_FALLBACK)
+    )
     insertion_field: str = "Insertion Type"
     fallback_insertion_values: tuple[str, ...] = ("BE",)
     metadata_value_maps: Mapping[str, Mapping[Any, Any]] = field(default_factory=dict)
     derived_value_maps: Mapping[str, Mapping[Any, Any]] = field(default_factory=dict)
+    insertions: tuple[InsertionProfile, ...] = ()
 
 
 @dataclass(frozen=True)

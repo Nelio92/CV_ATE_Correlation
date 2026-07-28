@@ -147,6 +147,40 @@ CORRELATION_PROFILES = {
     ),
 }
 
+_BUILTIN_EXTRACTION_PROFILES = dict(EXTRACTION_PROFILES)
+_BUILTIN_CORRELATION_PROFILES = dict(CORRELATION_PROFILES)
+PROFILE_LOAD_ERROR: str | None = None
+
+
+def builtin_profile_ids() -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*_BUILTIN_EXTRACTION_PROFILES, *_BUILTIN_CORRELATION_PROFILES)))
+
+
+def refresh_profiles(*, strict: bool = False) -> None:
+    """Reload custom profiles from the per-user CorreLaTE profile store."""
+    global PROFILE_LOAD_ERROR
+    from .profile_store import load_custom_profiles
+
+    EXTRACTION_PROFILES.clear()
+    EXTRACTION_PROFILES.update(_BUILTIN_EXTRACTION_PROFILES)
+    CORRELATION_PROFILES.clear()
+    CORRELATION_PROFILES.update(_BUILTIN_CORRELATION_PROFILES)
+    try:
+        custom_extraction, custom_correlation = load_custom_profiles()
+        collisions = set(custom_correlation) & set(builtin_profile_ids())
+        if collisions:
+            raise ValueError(f"Custom profile IDs conflict with built-ins: {', '.join(sorted(collisions))}")
+        EXTRACTION_PROFILES.update(custom_extraction)
+        CORRELATION_PROFILES.update(custom_correlation)
+        PROFILE_LOAD_ERROR = None
+    except ValueError as error:
+        PROFILE_LOAD_ERROR = str(error)
+        if strict:
+            raise
+
+
+refresh_profiles()
+
 
 def get_extraction_profile(name: str) -> ExtractionProfile:
     try:

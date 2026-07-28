@@ -25,9 +25,9 @@ At a high level, the activity follows this flow:
 
 ![Illustrative Correlation Plot](docs/images/illustrative-correlation-plot.svg)
 
-## Automated Tool
+## CorreLaTE Automated Tool
 
-The repository now includes an installable, subsystem-neutral package under `src/cv_ate_correlation`.
+The repository now includes **CorreLaTE: ATE-to-Lab Correlation**, an installable, subsystem-neutral package under `src/cv_ate_correlation`.
 It provides one shared calculation engine through both a command-line interface and a lightweight desktop GUI.
 Campaign-specific details—including selected tests, dimensions, grouping, strategy, limits, special requirements,
 covariate keys, and guard-band directions—are isolated in profiles rather than hard-coded in the engine.
@@ -46,16 +46,18 @@ List the installed extraction and correlation profiles:
 cv-ate-correlation profiles
 ```
 
+This displays both the validated, read-only CTRX8188 profiles and any profiles created by the current user.
+
 ### Extract Raw TE Data
 
 The legacy-wide CSV adapter streams the input records instead of loading the complete 1.3 GB campaign into memory:
 
 ```powershell
 cv-ate-correlation extract `
-	--profile ctrx8188-txlo `
-	--input-folder Data/Raw_Data_TE `
-	--chip-manifest Data/TE_Data_Extraction/CTRX8188_CV_TE_Correlation_Chip_IDs_LO_Power.xlsx `
-	--output Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data_New.xlsx
+    --profile ctrx8188-txlo `
+    --input-folder Data/Raw_Data_TE `
+    --chip-manifest Data/TE_Data_Extraction/CTRX8188_CV_TE_Correlation_Chip_IDs_LO_Power.xlsx `
+    --output Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data_New.xlsx
 ```
 
 ### Generate and Re-import the CV Handoff
@@ -64,11 +66,11 @@ Create a protected measurement request and a separate TE-only manifest:
 
 ```powershell
 cv-ate-correlation request `
-	--profile ctrx8188-txlo `
-	--input Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data.xlsx `
-	--sheet Extracted_Data `
-	--request-output Data/CV_Request_TXLO.xlsx `
-	--manifest-output Data/TE_Manifest_TXLO.xlsx
+    --profile ctrx8188-txlo `
+    --input Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data.xlsx `
+    --sheet Extracted_Data `
+    --request-output Data/CV_Request_TXLO.xlsx `
+    --manifest-output Data/TE_Manifest_TXLO.xlsx
 ```
 
 The request contains immutable `Measurement_Request_ID` + `Repeat_Index` keys and an unlocked yellow CV value column.
@@ -78,10 +80,10 @@ After the CV owner completes and returns the request, validate full one-to-one c
 
 ```powershell
 cv-ate-correlation import-results `
-	--profile ctrx8188-txlo `
-	--returned Data/CV_Request_TXLO_Returned.xlsx `
-	--manifest Data/TE_Manifest_TXLO.xlsx `
-	--output Data/TXLO_Correlation_Input.xlsx
+    --profile ctrx8188-txlo `
+    --returned Data/CV_Request_TXLO_Returned.xlsx `
+    --manifest Data/TE_Manifest_TXLO.xlsx `
+    --output Data/TXLO_Correlation_Input.xlsx
 ```
 
 Import rejects missing, unknown, or duplicate request keys and blank/non-numeric CV measurements. Descriptive fields from the
@@ -93,24 +95,24 @@ For profiles without an auxiliary covariate:
 
 ```powershell
 cv-ate-correlation correlate `
-	--profile ctrx8188-dpll `
-	--input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
-	--sheet FE_Filtered `
-	--output Data/Outputs/DPLL_Correlation_New.xlsx `
-	--plots Data/Outputs/DPLL_Plots_New
+    --profile ctrx8188-dpll `
+    --input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
+    --sheet FE_Filtered `
+    --output Data/Outputs/DPLL_Correlation_New.xlsx `
+    --plots Data/Outputs/DPLL_Plots_New
 ```
 
 Kf-assisted profiles additionally require an explicit lookup workbook and sheet:
 
 ```powershell
 cv-ate-correlation correlate `
-	--profile ctrx8188-txpa `
-	--input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
-	--sheet FE_Filtered `
-	--covariate-input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
-	--covariate-sheet KF_FE `
-	--output Data/Outputs/TXPA_Correlation_New.xlsx `
-	--plots Data/Outputs/TXPA_Plots_New
+    --profile ctrx8188-txpa `
+    --input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
+    --sheet FE_Filtered `
+    --covariate-input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
+    --covariate-sheet KF_FE `
+    --output Data/Outputs/TXPA_Correlation_New.xlsx `
+    --plots Data/Outputs/TXPA_Plots_New
 ```
 
 Each report contains:
@@ -128,12 +130,66 @@ Launch the GUI with:
 cv-ate-correlation gui
 ```
 
-The GUI and CLI use the same engine. The desktop interface now provides four guided tabs:
+The GUI and CLI use the same engine and persistent profile registry. The desktop interface provides five guided tabs:
 
-1. `Extract TE` — select an extraction profile, raw-data folder, chip manifest, and output workbook.
-2. `Create CV Request` — generate the protected CV workbook and separate internal ATE manifest.
-3. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
-4. `Correlate` — generate the Excel report and optional PNG plots, including explicit Kf/covariate selection.
+1. `Profiles` — create, validate, update, or delete a reusable custom profile.
+2. `Extract TE` — select an extraction profile, chip manifest, and output workbook. Built-in profiles also select a
+    raw-data folder; custom profiles use the files assigned to their insertions.
+3. `Create CV Request` — generate the protected CV workbook and separate internal ATE manifest.
+4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
+5. `Correlate` — generate the Excel report and optional PNG plots, including explicit covariate selection.
+
+The profile editor is subsystem-neutral. A user can define:
+
+- insertions before test identity, with a name such as `S1`, fixed `FE` or `BE` group, numeric temperature, and one
+    or more corresponding raw-data files selected with `Browse…`
+- exact test numbers, inclusive test-number ranges, and test-name fragments
+- independently selectable grouping conditions for `DUT Nr`, `Test Number`, `Frequency`, `Supply Corner`, `Channel`,
+    and `Digital Control`
+- filename- or test-name-based identification configured inside each grouping condition
+- additional user-defined grouping conditions created with the `Add…` button
+- Lab/reference and ATE/candidate columns, mean-delta or median-offset strategy, and minimum points per group
+- limit, unit, and detail-key columns
+- distribution-sigma or shifted-upper-limit guard-band behavior
+- optional covariate value, merge keys, and output name
+
+Each grouping condition has an editable input-column name. The defaults use common ATE names such as `Frequency_GHz` and
+`Voltage corner`; alternatives such as `PA Channel`, `LUT value`, or a project-specific column can be entered directly. Its
+identification source and rule are configured in the same box. Every manually entered field in the GUI includes a short
+description and example value; browse controls and fixed dropdown lists are self-describing and therefore omit those hints.
+`Temperature` is not a selectable grouping condition: CorreLaTE derives it from each insertion and automatically includes it
+in correlation grouping. Profile validation requires at least one existing raw file for every insertion and rejects duplicate
+insertion names or a raw file assigned to more than one insertion.
+
+For `BE` insertions, CorreLaTE automatically falls back to the FUSE metadata columns when the normal chip-coordinate values
+are blank or their columns are absent: test number `62007` supplies `WAFER`, `62008` supplies `X`, and `62009` supplies `Y`.
+These mappings and the `BE` applicability are the defaults for new and existing custom profiles.
+
+Custom profiles are stored per Windows user in `%APPDATA%\CorreLaTE\profiles.json`. They are loaded by both the GUI and CLI,
+so a saved profile immediately appears in all extraction, handoff, import, and correlation selectors. The built-in CTRX8188
+profiles are read-only and retain their golden-regression behavior.
+
+The compact `Tests` field accepts entries such as `101, 200-220, LeakageCurrent`.
+
+Regular expressions are not required for normal profile creation. The identification-method dropdown provides:
+
+- `Use existing column` when the source workbook already contains the grouping value
+- `Text mappings (no regex)` for literal rules, entered one per line, such as:
+
+```text
+HOT => 125
+RT => 25
+095 => VMIN
+```
+
+- `Number after prefix (no regex)` where entering `FwLu` extracts `255` from `FwLu255`
+- `Advanced regex` as an optional expert mode for cases the guided methods cannot express; for example:
+
+```text
+CH(\d+)
+```
+
+The GUI translates the two no-regex methods into validated internal extraction rules when the profile is saved.
 
 Workbook sheet selectors are populated automatically after browsing. Long-running extraction, correlation, and plotting work runs
 outside the Tk event loop, with a shared progress/status area keeping the interface responsive.
@@ -160,7 +216,8 @@ The current suite validates:
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
-The complete suite currently contains 14 passing tests. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
+The complete suite currently contains 32 tests, including profile parsing, insertion validation and extraction, persistence,
+built-in protection, and runtime registry integration. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
 differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
 separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).
 
@@ -287,7 +344,7 @@ $$
 CV_{pred} = ATE + \operatorname{median}(CV - ATE)
 $$
 
-2. Kf-assisted model
+1. Kf-assisted model
 
 $$
 CV_{pred} = ATE - (\alpha K_f + \beta)

@@ -7,15 +7,28 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import profiles_8188 as profile_registry
 from .correlation import attach_covariate, correlate_frame
 from .extraction import LegacyWideTeCsvAdapter
 from .handoff import import_measurement_results, create_measurement_request
-from .profiles_8188 import CORRELATION_PROFILES, EXTRACTION_PROFILES, get_correlation_profile, get_extraction_profile
+from .profile_store import profile_store_path
+from .profiles_8188 import (
+    CORRELATION_PROFILES,
+    EXTRACTION_PROFILES,
+    builtin_profile_ids,
+    get_correlation_profile,
+    get_extraction_profile,
+    refresh_profiles,
+)
 from .reporting import write_excel_report, write_plots
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cv-ate-correlation", description="Profile-driven ATE correlation")
+    refresh_profiles()
+    parser = argparse.ArgumentParser(
+        prog="cv-ate-correlation",
+        description="CorreLaTE: profile-driven ATE-to-Lab correlation",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("profiles", help="List installed profiles")
 
@@ -57,8 +70,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "profiles":
-        print("Extraction profiles:", ", ".join(EXTRACTION_PROFILES))
-        print("Correlation profiles:", ", ".join(CORRELATION_PROFILES))
+        builtins = set(builtin_profile_ids())
+        print("Built-in profiles:", ", ".join(sorted(builtins)))
+        print("Custom profiles:", ", ".join(sorted(set(CORRELATION_PROFILES) - builtins)) or "(none)")
+        print("Custom profile store:", profile_store_path())
+        if profile_registry.PROFILE_LOAD_ERROR:
+            print("Profile store warning:", profile_registry.PROFILE_LOAD_ERROR)
         return 0
     if args.command == "gui":
         from .gui import launch
