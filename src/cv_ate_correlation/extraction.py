@@ -1,0 +1,234 @@
+"""Streaming adapters for legacy, very-wide ATE exports."""
+
+from __future__ import annotations
+
+import csv
+import math
+import re
+from pathlib import Path
+from typing import Any, Iterable
+
+import pandas as pd
+
+from .models import DerivedField, ExtractionProfile, RegexField
+
+
+def _normalize_wafer(value: Any) -> str:
+    text = str(value).strip().strip('"').strip("'")
+    if text.isdigit():
+        return str(int(text))
+    return text
+
+
+def _parse_number(value: Any) -> Any:
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    normalized = text.replace(",", ".")
+    try:
+        number = float(normalized)
+    except ValueError:
+        return text
+    if math.isfinite(number) and number.is_integer():
+        return int(number)
+    return number
+
+
+def _derive(rule: DerivedField, *, filename: str, test_name: str) -> Any:
+    source = filename if rule.source == "filename" else test_name
+    for case in rule.cases:
+        if case.mode == "regex":
+            if re.search(case.pattern, source, flags=re.IGNORECASE):
+                return case.value
+        elif case.pattern.lower() in source.lower():
+            return case.value
+    return rule.default
+
+
+def _extract_regex(rule: RegexField, *, filename: str, test_name: str) -> Any:
+    source = filename if rule.source == "filename" else test_name
+    match = re.search(rule.pattern, source, flags=re.IGNORECASE)
+    if not match:
+        return rule.default
+    value: Any = match.group(rule.group)
+    try:
+        if rule.cast == "int":
+            return int(value)
+        if rule.cast == "float":
+            return float(value)
+    except (TypeError, ValueError):
+        return rule.default
+    return str(value)
+
+
+def read_chip_manifest(path: Path) -> tuple[set[tuple[str, int, int]], dict[tuple[str, int, int], dict[str, str]]]:
+    """Read a chip manifest using flexible legacy column names."""
+    if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
+        frame = pd.read_excel(path, sheet_name=0)
+    else:
+        frame = pd.read_csv(path, sep=None, engine="python")
+
+    original = {str(column).strip().lower(): column for column in frame.columns}
+
+    def find(*names: str) -> Any:
+        for name in names:
+            if name in original:
+                return original[name]
+        for normalized, actual in original.items():
+            if any(name in normalized for name in names):
+                return actual
+        return None
+
+    wafer_col = find("wafer", "waf")
+    x_col = find("x")
+    y_col = find("y")
+    if wafer_col is None or x_col is None or y_col is None:
+        if len(frame.columns) < 3:
+            raise ValueError(f"Chip manifest has no usable wafer/X/Y columns: {path}")
+        wafer_col, x_col, y_col = frame.columns[:3]
+    dut_col = find("dut nr", "dut_nr", "dut number", "dut")
+    split_col = find("doe split", "doe_split", "split")
+
+    chips: set[tuple[str, int, int]] = set()
+    metadata: dict[tuple[str, int, int], dict[str, str]] = {}
+    for _, row in frame.iterrows():
+        wafer = _normalize_wafer(row[wafer_col])
+        try:
+            x_value = int(float(row[x_col]))
+            y_value = int(float(row[y_col]))
+        except (TypeError, ValueError):
+            continue
+        if not wafer or wafer.lower() == "nan":
+            continue
+        key = (wafer, x_value, y_value)
+        chips.add(key)
+        values: dict[str, str] = {}
+        if dut_col is not None and pd.notna(row[dut_col]):
+            value = row[dut_col]
+            values["DUT Nr"] = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value).strip()
+        if split_col is not None and pd.notna(row[split_col]):
+            values["DoE split"] = str(row[split_col]).strip()
+        metadata[key] = values
+    return chips, metadata
+
+
+class LegacyWideTeCsvAdapter:
+    """Extract selected tests without loading multi-gigabyte exports into memory."""
+
+    def extract(self, input_folder: Path, chip_manifest: Path, profile: ExtractionProfile) -> pd.DataFrame:
+        chips, chip_metadata = read_chip_manifest(chip_manifest)
+        rows: list[dict[str, Any]] = []
+        files = sorted(input_folder.glob("*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No CSV files found in {input_folder}")
+        for path in files:
+            rows.extend(self._extract_file(path, chips, chip_metadata, profile))
+        if not rows:
+            raise ValueError("No data matched the selected chips and tests")
+        frame = pd.DataFrame(rows)
+        return frame.reindex(columns=list(profile.output_columns))
+
+    def _extract_file(
+        self,
+        path: Path,
+        chips: set[tuple[str, int, int]],
+        metadata: dict[tuple[str, int, int], dict[str, str]],
+        profile: ExtractionProfile,
+    ) -> Iterable[dict[str, Any]]:
+        with path.open("r", encoding="latin1", errors="ignore", newline="") as handle:
+            reader = csv.reader(handle, delimiter=";")
+            physical_rows: list[list[str]] = []
+            for _ in range(13):
+                try:
+                    physical_rows.append(next(reader))
+                except StopIteration:
+                    return []
+            if len(physical_rows) < 5:
+                return []
+
+            header, names, lows, highs, units = physical_rows[:5]
+            index_by_name = {str(value).strip().upper(): index for index, value in enumerate(header)}
+            try:
+                wafer_index, x_index, y_index = (index_by_name[name.upper()] for name in profile.coordinate_columns)
+            except KeyError:
+                return []
+
+            file_values = {
+                rule.target: _derive(rule, filename=path.name, test_name="")
+                for rule in profile.derived_fields
+                if rule.source == "filename"
+            }
+            for rule in profile.regex_fields:
+                if rule.source == "filename":
+                    file_values[rule.target] = _extract_regex(rule, filename=path.name, test_name="")
+            for field, value_map in profile.derived_value_maps.items():
+                if field in file_values:
+                    file_values[field] = value_map.get(file_values[field], file_values[field])
+
+            fallback_indexes: dict[str, int] = {}
+            if file_values.get(profile.insertion_field) in profile.fallback_insertion_values:
+                for coordinate, test_number in profile.coordinate_fallback.items():
+                    index = index_by_name.get(str(test_number).upper())
+                    if index is not None:
+                        fallback_indexes[coordinate.upper()] = index
+
+            selected: list[tuple[int, int, str]] = []
+            for index, cell in enumerate(header):
+                text = str(cell).strip()
+                if not text.isdigit():
+                    continue
+                number = int(text)
+                name = str(names[index]).strip() if index < len(names) else ""
+                if profile.selector.matches(number, name):
+                    selected.append((index, number, name or text))
+            if not selected:
+                return []
+
+            output: list[dict[str, Any]] = []
+            for data_row in reader:
+                def get(index: int | None) -> str:
+                    return data_row[index].strip() if index is not None and index < len(data_row) else ""
+
+                wafer = _normalize_wafer(get(wafer_index))
+                x_raw, y_raw = get(x_index), get(y_index)
+                if (not wafer or wafer.lower() == "nan") and "WAFER" in fallback_indexes:
+                    wafer = _normalize_wafer(get(fallback_indexes["WAFER"]))
+                if not x_raw and "X" in fallback_indexes:
+                    x_raw = get(fallback_indexes["X"])
+                if not y_raw and "Y" in fallback_indexes:
+                    y_raw = get(fallback_indexes["Y"])
+                try:
+                    x_value, y_value = int(float(x_raw)), int(float(y_raw))
+                except (TypeError, ValueError):
+                    continue
+                chip_key = (wafer, x_value, y_value)
+                if chip_key not in chips:
+                    continue
+
+                chip_values = metadata.get(chip_key, {})
+                for test_index, test_number, test_name in selected:
+                    record: dict[str, Any] = {
+                        "DUT Nr": _parse_number(chip_values.get("DUT Nr", "")),
+                        "Wafer": _parse_number(wafer),
+                        "X": x_value,
+                        "Y": y_value,
+                        "DoE split": chip_values.get("DoE split", ""),
+                        "Test Number": test_number,
+                        "Test Name": test_name,
+                        "Test Value": _parse_number(get(test_index)),
+                        "Low": _parse_number(lows[test_index] if test_index < len(lows) else ""),
+                        "High": _parse_number(highs[test_index] if test_index < len(highs) else ""),
+                        "Unit": str(units[test_index]).strip() if test_index < len(units) else "",
+                        **file_values,
+                    }
+                    for field, value_map in profile.metadata_value_maps.items():
+                        if field in record:
+                            record[field] = value_map.get(record[field], record[field])
+                    for rule in profile.derived_fields:
+                        if rule.source == "test_name":
+                            record[rule.target] = _derive(rule, filename=path.name, test_name=test_name)
+                    for rule in profile.regex_fields:
+                        if rule.source == "test_name":
+                            record[rule.target] = _extract_regex(rule, filename=path.name, test_name=test_name)
+                    output.append(record)
+            return output

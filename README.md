@@ -25,6 +25,145 @@ At a high level, the activity follows this flow:
 
 ![Illustrative Correlation Plot](docs/images/illustrative-correlation-plot.svg)
 
+## Automated Tool
+
+The repository now includes an installable, subsystem-neutral package under `src/cv_ate_correlation`.
+It provides one shared calculation engine through both a command-line interface and a lightweight desktop GUI.
+Campaign-specific details—including selected tests, dimensions, grouping, strategy, limits, special requirements,
+covariate keys, and guard-band directions—are isolated in profiles rather than hard-coded in the engine.
+
+### Installation
+
+From this folder, install the package and test dependencies into the active Python environment:
+
+```powershell
+python -m pip install -e ".[test]"
+```
+
+List the installed extraction and correlation profiles:
+
+```powershell
+cv-ate-correlation profiles
+```
+
+### Extract Raw TE Data
+
+The legacy-wide CSV adapter streams the input records instead of loading the complete 1.3 GB campaign into memory:
+
+```powershell
+cv-ate-correlation extract `
+	--profile ctrx8188-txlo `
+	--input-folder Data/Raw_Data_TE `
+	--chip-manifest Data/TE_Data_Extraction/CTRX8188_CV_TE_Correlation_Chip_IDs_LO_Power.xlsx `
+	--output Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data_New.xlsx
+```
+
+### Generate and Re-import the CV Handoff
+
+Create a protected measurement request and a separate TE-only manifest:
+
+```powershell
+cv-ate-correlation request `
+	--profile ctrx8188-txlo `
+	--input Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data.xlsx `
+	--sheet Extracted_Data `
+	--request-output Data/CV_Request_TXLO.xlsx `
+	--manifest-output Data/TE_Manifest_TXLO.xlsx
+```
+
+The request contains immutable `Measurement_Request_ID` + `Repeat_Index` keys and an unlocked yellow CV value column.
+ATE values and limits are omitted from that workbook. The internal manifest retains the ATE values and must remain on the TE side.
+
+After the CV owner completes and returns the request, validate full one-to-one coverage and create the aligned correlation input:
+
+```powershell
+cv-ate-correlation import-results `
+	--profile ctrx8188-txlo `
+	--returned Data/CV_Request_TXLO_Returned.xlsx `
+	--manifest Data/TE_Manifest_TXLO.xlsx `
+	--output Data/TXLO_Correlation_Input.xlsx
+```
+
+Import rejects missing, unknown, or duplicate request keys and blank/non-numeric CV measurements. Descriptive fields from the
+returned workbook are not trusted during alignment; only the validated key and CV result are merged into the TE manifest.
+
+### Generate a Correlation Report
+
+For profiles without an auxiliary covariate:
+
+```powershell
+cv-ate-correlation correlate `
+	--profile ctrx8188-dpll `
+	--input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
+	--sheet FE_Filtered `
+	--output Data/Outputs/DPLL_Correlation_New.xlsx `
+	--plots Data/Outputs/DPLL_Plots_New
+```
+
+Kf-assisted profiles additionally require an explicit lookup workbook and sheet:
+
+```powershell
+cv-ate-correlation correlate `
+	--profile ctrx8188-txpa `
+	--input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
+	--sheet FE_Filtered `
+	--covariate-input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
+	--covariate-sheet KF_FE `
+	--output Data/Outputs/TXPA_Correlation_New.xlsx `
+	--plots Data/Outputs/TXPA_Plots_New
+```
+
+Each report contains:
+
+- `Correlation_Factors`
+- `Guard_Bands`
+- `Correlation_Summary`
+- `Correlated_Data`
+
+### Desktop GUI
+
+Launch the GUI with:
+
+```powershell
+cv-ate-correlation gui
+```
+
+The GUI and CLI use the same engine. The desktop interface now provides four guided tabs:
+
+1. `Extract TE` — select an extraction profile, raw-data folder, chip manifest, and output workbook.
+2. `Create CV Request` — generate the protected CV workbook and separate internal ATE manifest.
+3. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
+4. `Correlate` — generate the Excel report and optional PNG plots, including explicit Kf/covariate selection.
+
+Workbook sheet selectors are populated automatically after browsing. Long-running extraction, correlation, and plotting work runs
+outside the Tk event loop, with a shared progress/status area keeping the interface responsive.
+
+### Regression Validation
+
+Run the fast strategy and report regressions:
+
+```powershell
+python -m pytest -m "not slow" -q
+```
+
+Run all regressions, including the complete raw-data campaign:
+
+```powershell
+python -m pytest -q
+```
+
+The current suite validates:
+
+- DPLL mean-delta factors, shifted limits, and worst-case guard-bands
+- TXLO/TXPA median-offset factors, residuals, corrected limits, and special requirement policies
+- Kf-assisted coefficients, fit metrics, residuals, and limits
+- DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
+- direct DPLL parity against a freshly executed legacy extraction script
+
+The complete suite currently contains 14 passing tests. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
+differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
+separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).
+
 ## Repository Contents
 
 | File | Purpose |
