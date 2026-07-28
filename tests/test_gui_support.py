@@ -6,12 +6,18 @@ import pandas as pd
 import pytest
 
 from cv_ate_correlation.gui import (
+    CORRELATION_STRATEGY_EXPLANATIONS,
+    GUARD_BAND_EXPLANATIONS,
     GROUPING_CONDITION_OPTIONS,
     compile_grouping_conditions,
+    compile_coordinate_fallback,
     correlation_group_columns,
+    coordinate_fallback_values,
     grouping_condition_definitions,
     grouping_condition_state,
+    test_set_definitions as load_test_set_definitions,
     validate_insertion_definitions,
+    validate_test_set_definitions,
     workbook_sheet_names,
 )
 
@@ -88,6 +94,64 @@ def test_every_insertion_requires_existing_raw_data(tmp_path: Path) -> None:
         validate_insertion_definitions([
             {"name": "S2", "group": "BE", "temperature": "-40", "raw_files": []},
         ])
+
+
+def test_be_coordinate_fallback_is_visible_profile_state_and_configurable() -> None:
+    assert coordinate_fallback_values({}) == {
+        "WAFER": "62007",
+        "X": "62008",
+        "Y": "62009",
+    }
+    assert coordinate_fallback_values({
+        "coordinate_fallback": "WAFER=63007, X=63008, Y=63009",
+    }) == {
+        "WAFER": "63007",
+        "X": "63008",
+        "Y": "63009",
+    }
+    assert compile_coordinate_fallback({
+        "WAFER": "TN 64007",
+        "X": "TN64008",
+        "Y": "64009",
+    }) == "WAFER=64007, X=64008, Y=64009"
+
+    with pytest.raises(ValueError, match="BE X fallback must be a numeric test number"):
+        compile_coordinate_fallback({"WAFER": "62007", "X": "FUSE_X", "Y": "62009"})
+
+
+def test_test_sets_expose_equations_and_support_independent_policies() -> None:
+    assert "mean(Lab − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["mean_delta"]
+    assert "median(Lab − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["median_offset"]
+    assert "± k × σ" in GUARD_BAND_EXPLANATIONS["distribution_sigma"]
+    assert "max|Lab − corrected ATE|" in GUARD_BAND_EXPLANATIONS["shifted_upper_limit"]
+
+    migrated = load_test_set_definitions({
+        "tests": "101",
+        "strategy": "mean_delta",
+        "guard_band_kind": "shifted_upper_limit",
+        "sigma_multiplier": "6",
+    })
+    assert migrated[0]["tests"] == "101"
+    assert migrated[0]["strategy"] == "mean_delta"
+
+    validated = validate_test_set_definitions([
+        {
+            "name": "Noise",
+            "tests": "101-105",
+            "strategy": "mean_delta",
+            "guard_band_kind": "shifted_upper_limit",
+            "sigma_multiplier": "6",
+        },
+        {
+            "name": "Power",
+            "tests": "201, PowerTest",
+            "strategy": "median_offset",
+            "guard_band_kind": "distribution_sigma",
+            "sigma_multiplier": "4",
+        },
+    ])
+    assert [item["name"] for item in validated] == ["Noise", "Power"]
+    assert validated[1]["sigma_multiplier"] == 4.0
 
 
 def test_raw_file_cannot_be_assigned_to_two_insertions(tmp_path: Path) -> None:

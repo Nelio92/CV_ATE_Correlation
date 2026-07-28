@@ -30,9 +30,11 @@ from cv_ate_correlation.handoff import (
     create_measurement_request,
     import_measurement_results,
 )
+from cv_ate_correlation.models import DEFAULT_COORDINATE_FALLBACK
 from cv_ate_correlation.profile_store import (
     delete_custom_profile,
     load_custom_profile_specs,
+    parse_test_selector,
     profile_store_path,
     save_custom_profile_spec,
 )
@@ -99,6 +101,49 @@ GROUPING_METHODS = {
     "Advanced regex": "regex",
 }
 GROUPING_VALUE_TYPES = {"Text": "str", "Integer": "int", "Decimal": "float"}
+CORRELATION_STRATEGY_EXPLANATIONS = {
+    "mean_delta": "Corr_Factor = mean(Lab − ATE); corrected ATE = ATE + Corr_Factor",
+    "median_offset": "Corr_Factor = median(Lab − ATE); corrected ATE = ATE + Corr_Factor",
+}
+GUARD_BAND_EXPLANATIONS = {
+    "distribution_sigma": "limits = mean(corrected ATE) ± k × σ(corrected ATE)",
+    "shifted_upper_limit": (
+        "adjusted upper = original upper − f; worst-case upper = adjusted upper − max|Lab − corrected ATE|"
+    ),
+}
+
+
+class ScrollablePage(ttk.Frame):
+    """Notebook page with a vertical scrollbar and mouse-wheel support."""
+
+    def __init__(self, parent: tk.Misc, *, padding: int = 0) -> None:
+        super().__init__(parent)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        background = ttk.Style(self).lookup("TFrame", "background") or "#f0f0f0"
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=background)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.content = ttk.Frame(self.canvas, padding=padding)
+        self._window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._update_scroll_region)
+        self.canvas.bind("<Configure>", self._resize_content)
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+
+    def _update_scroll_region(self, _event: object | None = None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _resize_content(self, event: tk.Event) -> None:
+        self.canvas.itemconfigure(self._window, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        while widget is not None and widget is not self:
+            widget = widget.master
+        if widget is self and event.delta:
+            self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
 
 def _split_group_columns(value: Any) -> tuple[str, ...]:
@@ -165,6 +210,89 @@ def validate_insertion_definitions(definitions: list[Mapping[str, Any]]) -> list
             "group": group,
             "temperature": temperature,
             "raw_files": [str(path) for path in raw_files],
+        })
+    return validated
+
+
+def coordinate_fallback_values(spec: Mapping[str, Any]) -> dict[str, str]:
+    """Load the three editable BE FUSE coordinate test numbers from a profile spec."""
+    values = dict(DEFAULT_COORDINATE_FALLBACK)
+    raw_mapping = spec.get("coordinate_fallback", "")
+    if isinstance(raw_mapping, Mapping):
+        items = raw_mapping.items()
+    else:
+        items = []
+        for token in re.split(r"[,\n]", str(raw_mapping)):
+            if "=" in token:
+                key, value = token.split("=", 1)
+                items.append((key, value))
+    for key, value in items:
+        coordinate = str(key).strip().upper()
+        if coordinate in values and str(value).strip():
+            values[coordinate] = str(value).strip()
+    return values
+
+
+def compile_coordinate_fallback(values: Mapping[str, Any]) -> str:
+    """Validate GUI entries and serialize the BE FUSE coordinate fallback mapping."""
+    normalized: dict[str, str] = {}
+    for coordinate in DEFAULT_COORDINATE_FALLBACK:
+        value = str(values.get(coordinate, "")).strip()
+        match = re.fullmatch(r"(?:TN\s*)?(\d+)", value, flags=re.IGNORECASE)
+        if match is None:
+            raise ValueError(
+                f"BE {coordinate} fallback must be a numeric test number; for example: "
+                f"{DEFAULT_COORDINATE_FALLBACK[coordinate]}"
+            )
+        normalized[coordinate] = match.group(1)
+    return ", ".join(f"{coordinate}={value}" for coordinate, value in normalized.items())
+
+
+def test_set_definitions(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Load persisted test sets or migrate the former profile-wide policy fields."""
+    saved = spec.get("test_sets")
+    if isinstance(saved, list) and saved:
+        return [dict(item) for item in saved if isinstance(item, dict)]
+    return [{
+        "name": "Tests 1",
+        "tests": str(spec.get("tests", "")),
+        "strategy": str(spec.get("strategy", "median_offset")),
+        "guard_band_kind": str(spec.get("guard_band_kind", "distribution_sigma")),
+        "sigma_multiplier": str(spec.get("sigma_multiplier", "6.0")),
+    }]
+
+
+def validate_test_set_definitions(definitions: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Validate test selectors and their independently selected calculation policies."""
+    if not definitions:
+        raise ValueError("Add at least one test set")
+    validated: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for index, definition in enumerate(definitions, start=1):
+        name = str(definition.get("name", "")).strip() or f"Tests {index}"
+        if name.casefold() in names:
+            raise ValueError(f"Test set name '{name}' is duplicated")
+        names.add(name.casefold())
+        tests = str(definition.get("tests", "")).strip()
+        parse_test_selector(tests)
+        strategy = str(definition.get("strategy", ""))
+        if strategy not in CORRELATION_STRATEGY_EXPLANATIONS:
+            raise ValueError(f"Test set '{name}' has an invalid correlation strategy")
+        guard_kind = str(definition.get("guard_band_kind", ""))
+        if guard_kind not in GUARD_BAND_EXPLANATIONS:
+            raise ValueError(f"Test set '{name}' has an invalid guard-band policy")
+        try:
+            sigma_multiplier = float(str(definition.get("sigma_multiplier", "")).strip())
+        except ValueError as error:
+            raise ValueError(f"Test set '{name}' needs a numeric sigma multiplier") from error
+        if not math.isfinite(sigma_multiplier) or sigma_multiplier <= 0:
+            raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
+        validated.append({
+            "name": name,
+            "tests": tests,
+            "strategy": strategy,
+            "guard_band_kind": guard_kind,
+            "sigma_multiplier": sigma_multiplier,
         })
     return validated
 
@@ -352,7 +480,7 @@ class CorrelationDesktopApp:
         self.root = root
         self.root.title(APPLICATION_TITLE)
         self.root.geometry("1180x760")
-        self.root.minsize(1000, 680)
+        self.root.minsize(760, 500)
 
         style = ttk.Style(root)
         style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
@@ -381,9 +509,10 @@ class CorrelationDesktopApp:
         self._build_correlation_tab()
 
     def _make_tab(self, title: str, heading: str, hint: str) -> ttk.Frame:
-        outer = ttk.Frame(self.notebook, padding=18)
+        scrollable = ScrollablePage(self.notebook, padding=18)
+        outer = scrollable.content
         outer.columnconfigure(0, weight=1)
-        self.notebook.add(outer, text=title)
+        self.notebook.add(scrollable, text=title)
         ttk.Label(outer, text=heading, style="Heading.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(outer, text=hint, style="Hint.TLabel", wraplength=850).grid(
             row=1, column=0, pady=(4, 14), sticky="w"
@@ -589,12 +718,15 @@ class CorrelationDesktopApp:
 
         editor = ttk.Notebook(outer)
         editor.grid(row=3, column=0, sticky="nsew")
-        insertions_page = ttk.Frame(editor, padding=12)
-        basics = ttk.Frame(editor, padding=12)
-        correlation = ttk.Frame(editor, padding=12)
-        editor.add(insertions_page, text="Insertions")
-        editor.add(basics, text="Identity & Tests")
-        editor.add(correlation, text="Correlation & Guard-Band")
+        insertion_scroll = ScrollablePage(editor, padding=12)
+        basics_scroll = ScrollablePage(editor, padding=12)
+        correlation_scroll = ScrollablePage(editor, padding=12)
+        insertions_page = insertion_scroll.content
+        basics = basics_scroll.content
+        correlation = correlation_scroll.content
+        editor.add(insertion_scroll, text="Insertions")
+        editor.add(basics_scroll, text="Identity & Tests")
+        editor.add(correlation_scroll, text="Correlation Inputs & Covariate")
         for page in (insertions_page, basics, correlation):
             page.columnconfigure(1, weight=1)
 
@@ -625,6 +757,12 @@ class CorrelationDesktopApp:
         }
         variables = {key: tk.StringVar(value=value) for key, value in defaults.items()}
         self._profile_editor_vars = variables
+        fallback_values = coordinate_fallback_values(defaults)
+        coordinate_fallback_vars = {
+            coordinate: tk.StringVar(value=value)
+            for coordinate, value in fallback_values.items()
+        }
+        self._coordinate_fallback_vars = coordinate_fallback_vars
 
         configured_insertions: list[dict[str, Any]] = insertion_definitions(defaults)
         selected_insertion = tk.StringVar()
@@ -768,6 +906,42 @@ class CorrelationDesktopApp:
         insertion_combo.bind("<<ComboboxSelected>>", choose_insertion)
         self._profile_insertions = configured_insertions
 
+        fallback_frame = ttk.LabelFrame(
+            insertions_page,
+            text="BE coordinate fallback (FUSE module)",
+            padding=8,
+        )
+        fallback_frame.grid(row=6, column=0, columnspan=3, pady=(10, 0), sticky="ew")
+        for column in (1, 3, 5):
+            fallback_frame.columnconfigure(column, weight=1)
+        ttk.Label(
+            fallback_frame,
+            text=(
+                "Used only for BE insertions when normal WAFER/X/Y values or columns are missing. "
+                "Enter the FUSE test numbers with or without the TN prefix."
+            ),
+            style="Hint.TLabel",
+            wraplength=900,
+        ).grid(row=0, column=0, columnspan=6, pady=(0, 7), sticky="w")
+        fallback_labels = {
+            "WAFER": "Wafer test number",
+            "X": "X-coordinate test number",
+            "Y": "Y-coordinate test number",
+        }
+        for index, coordinate in enumerate(("WAFER", "X", "Y")):
+            label_column = index * 2
+            ttk.Label(fallback_frame, text=fallback_labels[coordinate]).grid(
+                row=1,
+                column=label_column,
+                padx=(0 if index == 0 else 14, 6),
+                sticky="w",
+            )
+            ttk.Entry(
+                fallback_frame,
+                textvariable=coordinate_fallback_vars[coordinate],
+                width=12,
+            ).grid(row=1, column=label_column + 1, sticky="ew")
+
         def add_entry(page: ttk.Frame, row: int, label: str, key: str, hint: str) -> None:
             self._add_label(page, row, label)
             ttk.Entry(page, textvariable=variables[key]).grid(
@@ -782,10 +956,162 @@ class CorrelationDesktopApp:
             basics, 1, "Display name", "display_name",
             "Human-readable name shown in reports; for example: PMIC leakage at hot.",
         )
-        add_entry(
-            basics, 2, "Tests", "tests",
-            "Exact numbers, inclusive ranges, or name fragments; for example: 101, 1200-1299, LeakageCurrent.",
+
+        configured_test_sets = test_set_definitions(defaults)
+        selected_test_set = tk.StringVar()
+        test_set_name = tk.StringVar()
+        test_set_tests = tk.StringVar()
+        test_set_strategy = tk.StringVar(value="median_offset")
+        test_set_guard_band = tk.StringVar(value="distribution_sigma")
+        test_set_sigma = tk.StringVar(value="6.0")
+        strategy_equation = tk.StringVar()
+        guard_band_equation = tk.StringVar()
+        current_test_set = {"index": 0, "loading": False}
+
+        self._add_label(basics, 2, "Tests")
+        test_set_frame = ttk.LabelFrame(basics, text="Test-specific correlation and guard-band", padding=8)
+        test_set_frame.grid(row=2, column=1, columnspan=2, padx=(0, 8), pady=6, sticky="ew")
+        test_set_frame.columnconfigure(1, weight=1)
+        self._add_label(test_set_frame, 0, "Test set")
+        test_set_combo = ttk.Combobox(test_set_frame, textvariable=selected_test_set, state="readonly")
+        test_set_combo.grid(row=0, column=1, padx=(0, 8), pady=4, sticky="ew")
+        test_set_buttons = ttk.Frame(test_set_frame)
+        test_set_buttons.grid(row=0, column=2, sticky="w")
+
+        self._add_label(test_set_frame, 1, "Set name")
+        ttk.Entry(test_set_frame, textvariable=test_set_name).grid(
+            row=1, column=1, padx=(0, 8), pady=4, sticky="ew"
         )
+        ttk.Label(
+            test_set_frame,
+            text="Descriptive label shown in reports; for example: DPLL phase noise or TXPA power.",
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=1, column=2, sticky="w")
+
+        self._add_label(test_set_frame, 2, "Test selection")
+        ttk.Entry(test_set_frame, textvariable=test_set_tests).grid(
+            row=2, column=1, padx=(0, 8), pady=4, sticky="ew"
+        )
+        ttk.Label(
+            test_set_frame,
+            text="Exact numbers, inclusive ranges, or name fragments; for example: 101, 1200-1299, LeakageCurrent.",
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=2, column=2, sticky="w")
+
+        strategy_combo = self._add_combo(
+            test_set_frame,
+            3,
+            "Correlation strategy",
+            test_set_strategy,
+            tuple(CORRELATION_STRATEGY_EXPLANATIONS),
+            readonly=True,
+        )
+        ttk.Label(
+            test_set_frame,
+            textvariable=strategy_equation,
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=3, column=2, sticky="w")
+
+        guard_combo = self._add_combo(
+            test_set_frame,
+            4,
+            "Guard-band policy",
+            test_set_guard_band,
+            tuple(GUARD_BAND_EXPLANATIONS),
+            readonly=True,
+        )
+        ttk.Label(
+            test_set_frame,
+            textvariable=guard_band_equation,
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=4, column=2, sticky="w")
+
+        self._add_label(test_set_frame, 5, "Sigma multiplier (k)")
+        sigma_entry = ttk.Entry(test_set_frame, textvariable=test_set_sigma)
+        sigma_entry.grid(row=5, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            test_set_frame,
+            text="Used by distribution_sigma; for example: 6 gives mean ± 6σ.",
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=5, column=2, sticky="w")
+
+        def update_policy_explanations(*_args: object) -> None:
+            strategy_equation.set(CORRELATION_STRATEGY_EXPLANATIONS.get(test_set_strategy.get(), ""))
+            guard_band_equation.set(GUARD_BAND_EXPLANATIONS.get(test_set_guard_band.get(), ""))
+            sigma_entry.configure(
+                state="normal" if test_set_guard_band.get() == "distribution_sigma" else "disabled"
+            )
+
+        def store_current_test_set() -> None:
+            if current_test_set["loading"] or not configured_test_sets:
+                return
+            configured_test_sets[int(current_test_set["index"])].update({
+                "name": test_set_name.get().strip(),
+                "tests": test_set_tests.get().strip(),
+                "strategy": test_set_strategy.get(),
+                "guard_band_kind": test_set_guard_band.get(),
+                "sigma_multiplier": test_set_sigma.get().strip(),
+            })
+
+        def test_set_selector_values() -> tuple[str, ...]:
+            return tuple(
+                f"{item.get('name') or 'Unnamed'} · {item.get('strategy')} · {item.get('guard_band_kind')}"
+                for item in configured_test_sets
+            )
+
+        def load_test_set(index: int) -> None:
+            definition = configured_test_sets[index]
+            current_test_set.update(index=index, loading=True)
+            test_set_combo.configure(values=test_set_selector_values())
+            test_set_combo.current(index)
+            test_set_name.set(str(definition.get("name", "")))
+            test_set_tests.set(str(definition.get("tests", "")))
+            test_set_strategy.set(str(definition.get("strategy", "median_offset")))
+            test_set_guard_band.set(str(definition.get("guard_band_kind", "distribution_sigma")))
+            test_set_sigma.set(str(definition.get("sigma_multiplier", "6.0")))
+            current_test_set["loading"] = False
+            update_policy_explanations()
+
+        def choose_test_set(_event: object | None = None) -> None:
+            selected_index = max(test_set_combo.current(), 0)
+            store_current_test_set()
+            load_test_set(selected_index)
+
+        def add_test_set() -> None:
+            store_current_test_set()
+            configured_test_sets.append({
+                "name": f"Tests {len(configured_test_sets) + 1}",
+                "tests": "",
+                "strategy": "median_offset",
+                "guard_band_kind": "distribution_sigma",
+                "sigma_multiplier": "6.0",
+            })
+            load_test_set(len(configured_test_sets) - 1)
+
+        def remove_test_set() -> None:
+            if len(configured_test_sets) == 1:
+                messagebox.showinfo(
+                    "Test sets",
+                    "A profile needs at least one test set.",
+                    parent=self.root,
+                )
+                return
+            index = int(current_test_set["index"])
+            del configured_test_sets[index]
+            load_test_set(min(index, len(configured_test_sets) - 1))
+
+        ttk.Button(test_set_buttons, text="Add…", command=add_test_set).pack(side="left", padx=3)
+        ttk.Button(test_set_buttons, text="Remove", command=remove_test_set).pack(side="left", padx=3)
+        test_set_combo.bind("<<ComboboxSelected>>", choose_test_set)
+        test_set_strategy.trace_add("write", update_policy_explanations)
+        test_set_guard_band.trace_add("write", update_policy_explanations)
+        load_test_set(0)
+        self._profile_test_sets = configured_test_sets
 
         self._add_label(basics, 3, "Grouping conditions")
         grouping_frame = ttk.LabelFrame(basics, text="Condition and identification", padding=8)
@@ -988,14 +1314,6 @@ class CorrelationDesktopApp:
         load_condition(0)
 
         self._profile_grouping_definitions = grouping_definitions
-        self._add_combo(
-            basics,
-            4,
-            "Correlation strategy",
-            variables["strategy"],
-            ("median_offset", "mean_delta"),
-            readonly=True,
-        )
         add_entry(
             basics, 5, "Lab/reference column", "reference_column",
             "Column containing the Lab/CV result; for example: Lab Current or CV_PA_Power.",
@@ -1029,36 +1347,24 @@ class CorrelationDesktopApp:
             correlation, 3, "Test-name column", "test_name_column",
             "Input column holding descriptive test names; for example: Test Name.",
         )
-        self._add_combo(
-            correlation,
-            4,
-            "Guard-band policy",
-            variables["guard_band_kind"],
-            ("distribution_sigma", "shifted_upper_limit"),
-            readonly=True,
-        )
+        ttk.Separator(correlation).grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
         add_entry(
-            correlation, 5, "Sigma multiplier", "sigma_multiplier",
-            "Distribution width applied around the corrected mean; for example: 6 for ±6σ.",
-        )
-        ttk.Separator(correlation).grid(row=6, column=0, columnspan=3, pady=10, sticky="ew")
-        add_entry(
-            correlation, 7, "Covariate value column", "covariate_value_column",
+            correlation, 5, "Covariate value column", "covariate_value_column",
             "Optional lookup value used by the fitted model; for example: Test Value containing Kf.",
         )
         add_entry(
-            correlation, 8, "Covariate merge keys", "covariate_merge_keys",
+            correlation, 6, "Covariate merge keys", "covariate_merge_keys",
             "Columns joining lookup and correlation rows; for example: DUT Nr, Temperature.",
         )
         add_entry(
-            correlation, 9, "Covariate output name", "covariate_output_name",
+            correlation, 7, "Covariate output name", "covariate_output_name",
             "Name assigned to the merged value; for example: Kf or Process Monitor.",
         )
         ttk.Label(
             correlation,
             text="Leave both covariate value and merge keys empty for an offset-only profile.",
             style="Hint.TLabel",
-        ).grid(row=10, column=1, columnspan=2, sticky="w")
+        ).grid(row=8, column=1, columnspan=2, sticky="w")
 
         actions = ttk.Frame(outer)
         actions.grid(row=4, column=0, pady=(12, 0), sticky="e")
@@ -1066,6 +1372,10 @@ class CorrelationDesktopApp:
         def apply_grouping_definitions(spec: Mapping[str, Any]) -> None:
             grouping_definitions[:] = grouping_condition_definitions(spec)
             load_condition(0)
+
+        def apply_test_sets(spec: Mapping[str, Any]) -> None:
+            configured_test_sets[:] = test_set_definitions(spec)
+            load_test_set(0)
 
         def apply_insertions(spec: Mapping[str, Any]) -> None:
             configured_insertions[:] = insertion_definitions(spec)
@@ -1078,6 +1388,11 @@ class CorrelationDesktopApp:
                 insertion_name.set("")
                 insertion_temperature.set("")
                 insertion_files.delete(0, "end")
+
+        def apply_coordinate_fallback(spec: Mapping[str, Any]) -> None:
+            values = coordinate_fallback_values(spec)
+            for coordinate, variable in coordinate_fallback_vars.items():
+                variable.set(values[coordinate])
 
         def refresh_custom_list(preferred: str = "") -> None:
             try:
@@ -1100,11 +1415,13 @@ class CorrelationDesktopApp:
             for key, default in defaults.items():
                 variables[key].set(default)
             apply_insertions(defaults)
+            apply_coordinate_fallback(defaults)
+            apply_test_sets(defaults)
             apply_grouping_definitions(defaults)
             variables["profile_id"].set("")
             variables["display_name"].set("")
             variables["tests"].set("")
-            editor.select(insertions_page)
+            editor.select(insertion_scroll)
 
         def load_selected() -> None:
             profile_id = selected.get().strip()
@@ -1119,14 +1436,29 @@ class CorrelationDesktopApp:
             for key, default in defaults.items():
                 variables[key].set(str(spec.get(key, default)))
             apply_insertions(spec)
+            apply_coordinate_fallback(spec)
+            apply_test_sets(spec)
             apply_grouping_definitions(spec)
             variables["profile_id"].set(profile_id)
-            editor.select(insertions_page)
+            editor.select(insertion_scroll)
 
         def save_profile() -> None:
             profile_id = variables["profile_id"].get().strip()
             spec = {key: variable.get().strip() for key, variable in variables.items() if key != "profile_id"}
             try:
+                spec["coordinate_fallback"] = compile_coordinate_fallback({
+                    coordinate: variable.get()
+                    for coordinate, variable in coordinate_fallback_vars.items()
+                })
+                store_current_test_set()
+                spec["test_sets"] = validate_test_set_definitions(configured_test_sets)
+                primary_test_set = spec["test_sets"][0]
+                spec["tests"] = ", ".join(
+                    str(test_set["tests"]) for test_set in spec["test_sets"]
+                )
+                spec["strategy"] = primary_test_set["strategy"]
+                spec["guard_band_kind"] = primary_test_set["guard_band_kind"]
+                spec["sigma_multiplier"] = primary_test_set["sigma_multiplier"]
                 store_current_insertion()
                 spec["insertions"] = validate_insertion_definitions(configured_insertions)
                 store_current_condition()

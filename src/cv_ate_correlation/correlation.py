@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from .models import ConditionalDimension, CorrelationProfile
+from .models import ConditionalDimension, CorrelationProfile, TestPolicy
 from .guardbands import compute_guard_band
 
 
@@ -72,6 +72,27 @@ def _first_numeric(frame: pd.DataFrame, column: str | None) -> float | None:
     return float(values.iloc[0]) if len(values) else None
 
 
+def _test_policy_index(row: pd.Series, profile: CorrelationProfile) -> int:
+    raw_number = row.get("Test Number", "")
+    try:
+        test_number = int(float(raw_number))
+    except (TypeError, ValueError):
+        test_number = -1
+    test_name = str(row.get(profile.test_name_column or "Test Name", ""))
+    matches = [
+        index
+        for index, policy in enumerate(profile.test_policies)
+        if policy.selector.matches(test_number, test_name)
+    ]
+    identity = f"Test Number={raw_number!r}, Test Name={test_name!r}"
+    if not matches:
+        raise ValueError(f"No test-set policy matches {identity}")
+    if len(matches) > 1:
+        names = ", ".join(profile.test_policies[index].name for index in matches)
+        raise ValueError(f"Multiple test-set policies ({names}) match {identity}")
+    return matches[0]
+
+
 def attach_covariate(frame: pd.DataFrame, lookup: pd.DataFrame, profile: CorrelationProfile) -> pd.DataFrame:
     if profile.covariate is None:
         return frame
@@ -95,6 +116,13 @@ def attach_covariate(frame: pd.DataFrame, lookup: pd.DataFrame, profile: Correla
 
 def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> CorrelationResult:
     required = set(profile.group_by) | {profile.reference_column, profile.candidate_column}
+    if profile.test_policies:
+        if any(policy.selector.exact or policy.selector.ranges for policy in profile.test_policies):
+            required.add("Test Number")
+        if any(policy.selector.name_contains for policy in profile.test_policies):
+            if not profile.test_name_column:
+                raise ValueError("A test-name column is required by a name-based test set")
+            required.add(profile.test_name_column)
     required -= {dimension.target for dimension in profile.derived_dimensions}
     missing = sorted(required - set(frame.columns))
     if missing:
@@ -103,30 +131,41 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
     working = frame.copy()
     for dimension in profile.derived_dimensions:
         _derive_dimension(working, dimension)
+    if profile.test_policies:
+        working["__TestPolicyIndex"] = working.apply(_test_policy_index, axis=1, profile=profile)
     working[profile.reference_column] = _to_numeric(working[profile.reference_column])
     working[profile.candidate_column] = _to_numeric(working[profile.candidate_column])
     working = working.dropna(subset=[profile.reference_column, profile.candidate_column])
 
     summary_rows: list[dict[str, Any]] = []
     detail_frames: list[pd.DataFrame] = []
-    grouped = working.groupby(list(profile.group_by), dropna=False, sort=True)
+    group_columns = list(profile.group_by)
+    if profile.test_policies:
+        group_columns.append("__TestPolicyIndex")
+    grouped = working.groupby(group_columns, dropna=False, sort=True)
     for raw_key, raw_group in grouped:
         group = raw_group.copy()
         if len(group) < profile.minimum_points:
             continue
         key = raw_key if isinstance(raw_key, tuple) else (raw_key,)
+        policy: TestPolicy | None = None
+        if profile.test_policies:
+            policy = profile.test_policies[int(key[-1])]
+            key = key[:-1]
         group_values = dict(zip(profile.group_by, key))
+        strategy = policy.strategy if policy else profile.strategy
+        guard_band = policy.guard_band if policy else profile.guard_band
         reference = group[profile.reference_column].astype(float)
         candidate = group[profile.candidate_column].astype(float)
         delta = reference - candidate
-        factor = float(delta.mean()) if profile.strategy == "mean_delta" else float(delta.median())
+        factor = float(delta.mean()) if strategy == "mean_delta" else float(delta.median())
         corrected = candidate + factor
         residual = delta - factor
 
         lower_limit = _first_numeric(group, profile.lower_limit_column)
         upper_limit = _first_numeric(group, profile.upper_limit_column)
         guard = compute_guard_band(
-            profile.guard_band, group, group_values, corrected, residual, factor, lower_limit, upper_limit
+            guard_band, group, group_values, corrected, residual, factor, lower_limit, upper_limit
         )
         unit = ""
         if profile.unit_column and profile.unit_column in group.columns:
@@ -135,6 +174,9 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
 
         row: dict[str, Any] = {
             **group_values,
+            "TestSet": policy.name if policy else "",
+            "CorrelationStrategy": strategy,
+            "GuardBandPolicy": guard_band.kind,
             "TestName": _representative_text(group, profile.test_name_column),
             "Count": len(group),
             "CorrelationFactor": factor,
@@ -157,7 +199,7 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
                 physics_corrected = candidate - (slope * covariate + intercept)
                 physics_residual = reference - physics_corrected
             physics_guard = compute_guard_band(
-                profile.covariate_guard_band or profile.guard_band,
+                profile.covariate_guard_band or guard_band,
                 group, group_values, physics_corrected, physics_residual,
                 factor, lower_limit, upper_limit,
             )
@@ -178,11 +220,15 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
 
         summary_rows.append(row)
         details = group.copy()
+        details = details.drop(columns=["__TestPolicyIndex"], errors="ignore")
         details["ReferenceValue"] = reference
         details["CandidateValue"] = candidate
         details["Delta"] = delta
         details["CorrectedCandidate"] = corrected
         details["Residual"] = residual
+        details["TestSet"] = policy.name if policy else ""
+        details["CorrelationStrategy"] = strategy
+        details["GuardBandPolicy"] = guard_band.kind
         details["CovariateCorrectedCandidate"] = physics_corrected
         details["CovariateResidual"] = physics_residual
         details["GroupIndex"] = len(summary_rows) - 1

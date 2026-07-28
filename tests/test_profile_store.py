@@ -102,6 +102,45 @@ def test_be_fuse_coordinate_fallback_is_the_custom_profile_default() -> None:
     assert extraction.fallback_insertion_values == ("BE",)
 
 
+def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:
+    spec = custom_spec()
+    spec["test_sets"] = [
+        {
+            "name": "Phase noise",
+            "tests": "101, 200-202",
+            "strategy": "mean_delta",
+            "guard_band_kind": "shifted_upper_limit",
+            "sigma_multiplier": 6,
+        },
+        {
+            "name": "Leakage",
+            "tests": "LeakageCurrent, 301",
+            "strategy": "median_offset",
+            "guard_band_kind": "distribution_sigma",
+            "sigma_multiplier": 4,
+        },
+    ]
+
+    extraction, correlation = profile_spec_to_models("my-current", spec)
+
+    assert extraction.selector.matches(201, "unrelated")
+    assert extraction.selector.matches(999, "LeakageCurrent hot")
+    assert [policy.name for policy in correlation.test_policies] == ["Phase noise", "Leakage"]
+    assert correlation.test_policies[0].strategy == "mean_delta"
+    assert correlation.test_policies[0].guard_band.kind == "shifted_upper_limit"
+    assert correlation.test_policies[1].strategy == "median_offset"
+    assert correlation.test_policies[1].guard_band.sigma_multiplier == 4
+
+    store = tmp_path / "profiles.json"
+    save_custom_profile_spec("my-current", spec, store)
+    reloaded_extraction, reloaded_correlation = load_custom_profiles(store)
+    assert reloaded_extraction["my-current"].selector.matches(301, "unrelated")
+    assert [policy.name for policy in reloaded_correlation["my-current"].test_policies] == [
+        "Phase noise",
+        "Leakage",
+    ]
+
+
 def test_custom_profiles_round_trip_through_json_store(tmp_path) -> None:
     path = tmp_path / "profiles.json"
     save_custom_profile_spec("my-current", custom_spec(), path)

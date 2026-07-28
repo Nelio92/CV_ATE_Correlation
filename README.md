@@ -143,12 +143,13 @@ The profile editor is subsystem-neutral. A user can define:
 
 - insertions before test identity, with a name such as `S1`, fixed `FE` or `BE` group, numeric temperature, and one
     or more corresponding raw-data files selected with `Browse…`
-- exact test numbers, inclusive test-number ranges, and test-name fragments
+- one or more named test sets, each containing exact test numbers, inclusive ranges, or test-name fragments
+- an independent correlation strategy and guard-band policy for every test set
 - independently selectable grouping conditions for `DUT Nr`, `Test Number`, `Frequency`, `Supply Corner`, `Channel`,
     and `Digital Control`
 - filename- or test-name-based identification configured inside each grouping condition
 - additional user-defined grouping conditions created with the `Add…` button
-- Lab/reference and ATE/candidate columns, mean-delta or median-offset strategy, and minimum points per group
+- Lab/reference and ATE/candidate columns and minimum points per group
 - limit, unit, and detail-key columns
 - distribution-sigma or shifted-upper-limit guard-band behavior
 - optional covariate value, merge keys, and output name
@@ -163,13 +164,26 @@ insertion names or a raw file assigned to more than one insertion.
 
 For `BE` insertions, CorreLaTE automatically falls back to the FUSE metadata columns when the normal chip-coordinate values
 are blank or their columns are absent: test number `62007` supplies `WAFER`, `62008` supplies `X`, and `62009` supplies `Y`.
-These mappings and the `BE` applicability are the defaults for new and existing custom profiles.
+These mappings and the `BE` applicability are the defaults for new and existing custom profiles. The three values are visible
+and editable in the profile editor under `Insertions` → `BE coordinate fallback (FUSE module)`, allowing each silicon profile
+to use its own FUSE test numbers.
 
 Custom profiles are stored per Windows user in `%APPDATA%\CorreLaTE\profiles.json`. They are loaded by both the GUI and CLI,
 so a saved profile immediately appears in all extraction, handoff, import, and correlation selectors. The built-in CTRX8188
 profiles are read-only and retain their golden-regression behavior.
 
-The compact `Tests` field accepts entries such as `101, 200-220, LeakageCurrent`.
+The compact test-selection field in each test set accepts entries such as `101, 200-220, LeakageCurrent`. Use `Add…` to
+create another set when some tests require different calculations. Every set shows the underlying equations beside its
+selectors:
+
+- `mean_delta`: $f = \operatorname{mean}(Lab-ATE)$ and $ATE_{corrected}=ATE+f$
+- `median_offset`: $f = \operatorname{median}(Lab-ATE)$ and $ATE_{corrected}=ATE+f$
+- `distribution_sigma`: $limits=\operatorname{mean}(ATE_{corrected})\pm k\sigma(ATE_{corrected})$
+- `shifted_upper_limit`: $upper_{adjusted}=upper_{original}-f$ and
+    $upper_{worst}=upper_{adjusted}-\max|Lab-ATE_{corrected}|$
+
+Correlation workbooks include the applied test-set name, strategy, and guard-band policy for traceability. A row must match
+exactly one test set; CorreLaTE rejects unmatched or overlapping definitions rather than silently choosing a policy.
 
 Regular expressions are not required for normal profile creation. The identification-method dropdown provides:
 
@@ -192,7 +206,8 @@ CH(\d+)
 The GUI translates the two no-regex methods into validated internal extraction rules when the profile is saved.
 
 Workbook sheet selectors are populated automatically after browsing. Long-running extraction, correlation, and plotting work runs
-outside the Tk event loop, with a shared progress/status area keeping the interface responsive.
+outside the Tk event loop, with a shared progress/status area keeping the interface responsive. Every workflow tab and profile
+subpage has a vertical scrollbar and mouse-wheel support so all fields remain reachable in a small window.
 
 ### Regression Validation
 
@@ -216,7 +231,7 @@ The current suite validates:
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
-The complete suite currently contains 32 tests, including profile parsing, insertion validation and extraction, persistence,
+The complete suite currently contains 37 tests, including profile parsing, insertion validation and extraction, persistence,
 built-in protection, and runtime registry integration. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
 differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
 separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).

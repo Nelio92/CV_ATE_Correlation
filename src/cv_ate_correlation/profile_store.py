@@ -20,6 +20,7 @@ from .models import (
     InsertionProfile,
     MatchCase,
     RegexField,
+    TestPolicy,
     TestSelector,
 )
 
@@ -159,28 +160,74 @@ def _require_string(spec: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _parse_test_policies(spec: Mapping[str, Any]) -> tuple[TestSelector, tuple[TestPolicy, ...]]:
+    """Build per-test policies and one union selector used by extraction."""
+    raw_sets = spec.get("test_sets")
+    if raw_sets is None:
+        raw_sets = [{
+            "name": "Tests 1",
+            "tests": _require_string(spec, "tests"),
+            "strategy": spec.get("strategy", "median_offset"),
+            "guard_band_kind": spec.get("guard_band_kind", "distribution_sigma"),
+            "sigma_multiplier": spec.get("sigma_multiplier", 6.0),
+        }]
+    if not isinstance(raw_sets, list) or not raw_sets:
+        raise ValueError("Profile needs at least one test set")
+
+    policies: list[TestPolicy] = []
+    names: set[str] = set()
+    for index, raw_set in enumerate(raw_sets, start=1):
+        if not isinstance(raw_set, dict):
+            raise ValueError(f"Test set {index} has an invalid definition")
+        name = str(raw_set.get("name", "")).strip() or f"Tests {index}"
+        if name.casefold() in names:
+            raise ValueError(f"Test set name '{name}' is duplicated")
+        names.add(name.casefold())
+        selector = parse_test_selector(str(raw_set.get("tests", "")))
+        strategy = str(raw_set.get("strategy", "median_offset"))
+        if strategy not in {"mean_delta", "median_offset"}:
+            raise ValueError(f"Test set '{name}' has an invalid correlation strategy")
+        guard_kind = str(raw_set.get("guard_band_kind", "distribution_sigma"))
+        if guard_kind not in {"distribution_sigma", "shifted_upper_limit"}:
+            raise ValueError(f"Test set '{name}' has an invalid guard-band policy")
+        try:
+            sigma_multiplier = float(raw_set.get("sigma_multiplier", 6.0))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Test set '{name}' needs a numeric sigma multiplier") from error
+        if not math.isfinite(sigma_multiplier) or sigma_multiplier <= 0:
+            raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
+        policies.append(TestPolicy(
+            name=name,
+            selector=selector,
+            strategy=strategy,  # type: ignore[arg-type]
+            guard_band=GuardBandProfile(
+                kind=guard_kind,  # type: ignore[arg-type]
+                sigma_multiplier=sigma_multiplier,
+            ),
+        ))
+
+    selector = TestSelector(
+        exact=tuple(dict.fromkeys(number for policy in policies for number in policy.selector.exact)),
+        ranges=tuple(dict.fromkeys(value for policy in policies for value in policy.selector.ranges)),
+        name_contains=tuple(dict.fromkeys(value for policy in policies for value in policy.selector.name_contains)),
+    )
+    return selector, tuple(policies)
+
+
 def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[ExtractionProfile, CorrelationProfile]:
     """Validate one JSON-compatible custom definition and build runtime profiles."""
     if not _PROFILE_ID_PATTERN.fullmatch(profile_id):
         raise ValueError("Profile ID must use 3-64 lowercase letters, numbers, underscores, or hyphens")
     display_name = _require_string(spec, "display_name")
-    selector_expression = _require_string(spec, "tests")
+    extraction_selector, test_policies = _parse_test_policies(spec)
     group_by = _split_csv(_require_string(spec, "group_by"))
     if not group_by:
         raise ValueError("At least one grouping condition is required")
 
-    strategy = str(spec.get("strategy", "median_offset"))
-    if strategy not in {"mean_delta", "median_offset"}:
-        raise ValueError("Strategy must be mean_delta or median_offset")
-    guard_kind = str(spec.get("guard_band_kind", "distribution_sigma"))
-    if guard_kind not in {"distribution_sigma", "shifted_upper_limit"}:
-        raise ValueError("Guard-band kind must be distribution_sigma or shifted_upper_limit")
+    primary_policy = test_policies[0]
     minimum_points = int(spec.get("minimum_points", 5))
     if minimum_points < 1:
         raise ValueError("Minimum points must be at least 1")
-    sigma_multiplier = float(spec.get("sigma_multiplier", 6.0))
-    if sigma_multiplier <= 0:
-        raise ValueError("Sigma multiplier must be positive")
 
     condition_rules = parse_condition_rules(str(spec.get("condition_rules", "")))
     regex_rules = parse_regex_rules(str(spec.get("regex_rules", "")))
@@ -244,7 +291,7 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
 
     extraction = ExtractionProfile(
         name=display_name,
-        selector=parse_test_selector(selector_expression),
+        selector=extraction_selector,
         output_columns=output_columns,
         derived_fields=condition_rules,
         regex_fields=regex_rules,
@@ -275,7 +322,7 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
 
     correlation = CorrelationProfile(
         name=display_name,
-        strategy=strategy,  # type: ignore[arg-type]
+        strategy=primary_policy.strategy,
         reference_column=_require_string(spec, "reference_column"),
         candidate_column=_require_string(spec, "candidate_column"),
         group_by=group_by,
@@ -285,8 +332,9 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
         unit_column=optional_column("unit_column"),
         test_name_column=optional_column("test_name_column"),
         detail_key_columns=_split_csv(str(spec.get("detail_key_columns", ""))),
-        guard_band=GuardBandProfile(kind=guard_kind, sigma_multiplier=sigma_multiplier),  # type: ignore[arg-type]
+        guard_band=primary_policy.guard_band,
         covariate=covariate,
+        test_policies=test_policies,
     )
     return extraction, correlation
 

@@ -13,9 +13,14 @@ from .correlation import CorrelationResult
 
 def write_excel_report(result: CorrelationResult, profile: CorrelationProfile, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    factor_columns = [*profile.group_by, "TestName", "Count", "CorrelationFactor"]
+    policy_columns = [
+        column
+        for column in ("TestSet", "CorrelationStrategy", "GuardBandPolicy")
+        if column in result.summary.columns
+    ]
+    factor_columns = [*profile.group_by, *policy_columns, "TestName", "Count", "CorrelationFactor"]
     guard_columns = [
-        *profile.group_by, "TestName", "Count", "GuardBandMethod", "OriginalLowerLimit",
+        *profile.group_by, *policy_columns, "TestName", "Count", "GuardBandMethod", "OriginalLowerLimit",
         "OriginalUpperLimit", "AdjustedLowerLimit", "AdjustedUpperLimit", "WorstCaseUpperLimit", "Unit",
     ]
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -54,7 +59,10 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
         corrected_axis.set_ylabel(summary.get("Unit", "") or "Value")
         corrected_axis.grid(alpha=0.25)
         corrected_axis.legend()
-        title = " | ".join(f"{key}={summary[key]}" for key in profile.group_by)
+        title_fields = [*profile.group_by]
+        if summary.get("TestSet"):
+            title_fields.append("TestSet")
+        title = " | ".join(f"{key}={summary[key]}" for key in title_fields)
         fig.suptitle(title)
         fig.tight_layout()
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("_")[:180]

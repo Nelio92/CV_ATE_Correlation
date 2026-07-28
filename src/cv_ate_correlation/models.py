@@ -119,6 +119,14 @@ class CovariateProfile:
 
 
 @dataclass(frozen=True)
+class TestPolicy:
+    name: str
+    selector: TestSelector
+    strategy: Literal["mean_delta", "median_offset"]
+    guard_band: GuardBandProfile
+
+
+@dataclass(frozen=True)
 class CorrelationProfile:
     name: str
     strategy: Literal["mean_delta", "median_offset"]
@@ -135,3 +143,4 @@ class CorrelationProfile:
     guard_band: GuardBandProfile = GuardBandProfile(kind="distribution_sigma")
     covariate: CovariateProfile | None = None
     covariate_guard_band: GuardBandProfile | None = None
+    test_policies: tuple[TestPolicy, ...] = ()
