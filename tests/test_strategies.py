@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from openpyxl import load_workbook
 
 from cv_ate_correlation.models import (
     CorrelationProfile,
@@ -13,6 +14,7 @@ from cv_ate_correlation.models import (
     TestSelector as ProfileTestSelector,
 )
 from cv_ate_correlation.correlation import correlate_frame
+from cv_ate_correlation.excel import ACCENT_1_BLUE
 from cv_ate_correlation.reporting import write_excel_report
 
 
@@ -104,6 +106,10 @@ def test_different_test_sets_use_different_strategies_and_guard_bands(tmp_path: 
     for sheet in ("Correlation_Factors", "Guard_Bands"):
         columns = pd.read_excel(report, sheet_name=sheet).columns
         assert {"TestSet", "CorrelationStrategy", "GuardBandPolicy"}.issubset(columns)
+    workbook = load_workbook(report)
+    for worksheet in workbook.worksheets:
+        assert worksheet.auto_filter.ref == worksheet.dimensions
+        assert worksheet["A1"].fill.fgColor.rgb == f"00{ACCENT_1_BLUE}"
 
 
 def test_overlapping_test_set_policies_are_rejected_at_runtime() -> None:

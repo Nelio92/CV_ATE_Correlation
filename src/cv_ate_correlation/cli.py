@@ -9,6 +9,7 @@ import pandas as pd
 
 from . import profiles_8188 as profile_registry
 from .correlation import attach_covariate, correlate_frame
+from .excel import write_dataframe_workbook
 from .extraction import LegacyWideTeCsvAdapter
 from .handoff import import_measurement_results, create_measurement_request
 from .profile_store import profile_store_path
@@ -86,8 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         result = LegacyWideTeCsvAdapter().extract(
             args.input_folder, args.chip_manifest, get_extraction_profile(args.profile)
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        result.to_excel(args.output, index=False, sheet_name="Extracted_Data")
+        write_dataframe_workbook(args.output, {"Extracted_Data": result})
         print(f"Wrote {len(result)} extracted rows to {args.output}")
         return 0
     if args.command == "request":
@@ -105,8 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             args.returned, args.manifest, profile,
             returned_sheet=args.returned_sheet, manifest_sheet=args.manifest_sheet,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        result.to_excel(args.output, index=False, sheet_name="Correlation_Input")
+        write_dataframe_workbook(args.output, {"Correlation_Input": result})
         print(f"Wrote {len(result)} validated one-to-one rows to {args.output}")
         return 0
 

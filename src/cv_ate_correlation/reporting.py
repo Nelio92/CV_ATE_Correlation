@@ -9,6 +9,7 @@ import pandas as pd
 
 from .models import CorrelationProfile
 from .correlation import CorrelationResult
+from .excel import format_workbook
 
 
 def write_excel_report(result: CorrelationResult, profile: CorrelationProfile, output: Path) -> None:
@@ -30,6 +31,7 @@ def write_excel_report(result: CorrelationResult, profile: CorrelationProfile, o
         )
         result.summary.to_excel(writer, index=False, sheet_name="Correlation_Summary")
         result.details.to_excel(writer, index=False, sheet_name="Correlated_Data")
+    format_workbook(output)
 
 
 def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_folder: Path, dpi: int = 160) -> int:

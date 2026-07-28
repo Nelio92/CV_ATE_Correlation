@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cv_ate_correlation.correlation import attach_covariate, correlate_frame
+from cv_ate_correlation.excel import write_dataframe_workbook
 from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
 from cv_ate_correlation.handoff import (
     MANIFEST_SHEET,
@@ -485,6 +486,10 @@ class CorrelationDesktopApp:
         style = ttk.Style(root)
         style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
         style.configure("Hint.TLabel", foreground="#555555")
+        style.configure("Input.TLabel", foreground="#1F4E78", font=("Segoe UI", 9, "bold"))
+        style.configure("Output.TLabel", foreground="#2E7D32", font=("Segoe UI", 9, "bold"))
+        style.configure("Input.TEntry", fieldbackground="#EAF2F8")
+        style.configure("Output.TEntry", fieldbackground="#EAF4EA")
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(12, 6))
@@ -517,8 +522,14 @@ class CorrelationDesktopApp:
         ttk.Label(outer, text=hint, style="Hint.TLabel", wraplength=850).grid(
             row=1, column=0, pady=(4, 14), sticky="w"
         )
+        roles = ttk.Frame(outer)
+        roles.grid(row=2, column=0, pady=(0, 10), sticky="w")
+        ttk.Label(roles, text="INPUT", style="Input.TLabel").pack(side="left")
+        ttk.Label(roles, text=" = choose an existing file/folder", style="Hint.TLabel").pack(side="left")
+        ttk.Label(roles, text="   OUTPUT", style="Output.TLabel").pack(side="left")
+        ttk.Label(roles, text=" = choose a new destination", style="Hint.TLabel").pack(side="left")
         form = ttk.Frame(outer)
-        form.grid(row=2, column=0, sticky="nsew")
+        form.grid(row=3, column=0, sticky="nsew")
         form.columnconfigure(1, weight=1)
         return form
 
@@ -581,11 +592,19 @@ class CorrelationDesktopApp:
         variable: tk.StringVar,
         command: Callable[[], None],
         *,
-        button_text: str = "Browse…",
+        direction: str,
+        button_text: str | None = None,
     ) -> tuple[ttk.Entry, ttk.Button]:
-        self._add_label(form, row, label)
-        entry = ttk.Entry(form, textvariable=variable)
+        if direction not in {"input", "output"}:
+            raise ValueError("Path direction must be 'input' or 'output'")
+        role = direction.upper()
+        ttk.Label(form, text=f"{role} · {label}", style=f"{role.title()}.TLabel").grid(
+            row=row, column=0, padx=(0, 10), pady=7, sticky="w"
+        )
+        entry = ttk.Entry(form, textvariable=variable, style=f"{role.title()}.TEntry")
         entry.grid(row=row, column=1, padx=(0, 8), pady=7, sticky="ew")
+        if button_text is None:
+            button_text = "Open…" if direction == "input" else "Save as…"
         button = ttk.Button(form, text=button_text, command=command)
         button.grid(row=row, column=2, pady=7, sticky="ew")
         return entry, button
@@ -1516,7 +1535,7 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "2 · Extract TE",
             "Extract normalized ATE measurements",
-            "Streams legacy wide TE CSV files, filters the selected devices and tests, and writes Extracted_Data.",
+            "INPUT: raw TE data and chip manifest. OUTPUT: a new formatted workbook containing Extracted_Data.",
         )
         profile = tk.StringVar(value=next(iter(EXTRACTION_PROFILES)))
         raw_folder = tk.StringVar()
@@ -1529,6 +1548,7 @@ class CorrelationDesktopApp:
             "Raw TE folder (built-ins)",
             raw_folder,
             lambda: self._choose_folder(raw_folder, "Select raw TE data folder"),
+            direction="input",
             button_text="Select…",
         )
         self._add_path(
@@ -1537,6 +1557,7 @@ class CorrelationDesktopApp:
             "Chip manifest",
             chip_manifest,
             lambda: self._choose_open(chip_manifest),
+            direction="input",
         )
         self._add_path(
             form,
@@ -1544,6 +1565,7 @@ class CorrelationDesktopApp:
             "Extracted workbook",
             output,
             lambda: self._choose_save(output, "Save extracted ATE workbook"),
+            direction="output",
         )
 
         def run() -> None:
@@ -1567,8 +1589,7 @@ class CorrelationDesktopApp:
                     get_extraction_profile(values["profile"]),
                 )
                 destination = Path(values["output workbook"])
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                frame.to_excel(destination, index=False, sheet_name="Extracted_Data")
+                write_dataframe_workbook(destination, {"Extracted_Data": frame})
                 return f"Extracted {len(frame):,} rows to {destination}."
 
             self._start_job(run_button, "Extracting raw TE data…", action)
@@ -1592,7 +1613,8 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "3 · Create CV Request",
             "Create a protected CV measurement request",
-            "The editable request excludes ATE values. A separate internal manifest retains ATE data for one-to-one alignment.",
+            "INPUT: the extracted ATE workbook. OUTPUT: a CV request to send to Lab/CV and a separate internal ATE "
+            "manifest to keep for Step 4; the manifest is generated here, not loaded.",
         )
         profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
         source = tk.StringVar()
@@ -1608,6 +1630,7 @@ class CorrelationDesktopApp:
             "Extracted workbook",
             source,
             lambda: self._choose_open(source, sheet, sheet_combo),
+            direction="input",
         )
         self._add_label(form, 3, "ATE value column")
         ttk.Entry(form, textvariable=value_column).grid(row=3, column=1, padx=(0, 8), pady=7, sticky="ew")
@@ -1620,16 +1643,18 @@ class CorrelationDesktopApp:
         self._add_path(
             form,
             4,
-            "CV request workbook",
+            "CV request workbook (send to Lab/CV)",
             request_output,
             lambda: self._choose_save(request_output, "Save CV measurement request"),
+            direction="output",
         )
         self._add_path(
             form,
             5,
-            "Internal ATE manifest",
+            "Internal ATE manifest (keep for Step 4)",
             manifest_output,
             lambda: self._choose_save(manifest_output, "Save internal ATE manifest"),
+            direction="output",
         )
 
         def run() -> None:
@@ -1671,7 +1696,7 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "4 · Import CV Results",
             "Validate and align returned CV measurements",
-            "Rejects duplicate, missing, or unknown request keys and merges only validated CV values into the ATE manifest.",
+            "INPUT: the completed CV request and internal ATE manifest from Step 3. OUTPUT: a new aligned correlation workbook.",
         )
         profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
         returned = tk.StringVar()
@@ -1684,17 +1709,19 @@ class CorrelationDesktopApp:
         self._add_path(
             form,
             1,
-            "Returned CV workbook",
+            "Returned CV workbook (completed by Lab/CV)",
             returned,
             lambda: self._choose_open(returned, returned_sheet, returned_combo),
+            direction="input",
         )
         manifest_combo = self._add_combo(form, 4, "Manifest sheet", manifest_sheet, ())
         self._add_path(
             form,
             3,
-            "Internal ATE manifest",
+            "Internal ATE manifest (created in Step 3)",
             manifest,
             lambda: self._choose_open(manifest, manifest_sheet, manifest_combo),
+            direction="input",
         )
         self._add_path(
             form,
@@ -1702,6 +1729,7 @@ class CorrelationDesktopApp:
             "Aligned correlation input",
             output,
             lambda: self._choose_save(output, "Save aligned correlation input"),
+            direction="output",
         )
 
         def run() -> None:
@@ -1725,8 +1753,7 @@ class CorrelationDesktopApp:
                     manifest_sheet=values["manifest sheet"],
                 )
                 destination = Path(values["output workbook"])
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                frame.to_excel(destination, index=False, sheet_name="Correlation_Input")
+                write_dataframe_workbook(destination, {"Correlation_Input": frame})
                 return f"Validated and aligned {len(frame):,} one-to-one rows to {destination}."
 
             self._start_job(run_button, "Validating returned CV measurements…", action)
@@ -1738,7 +1765,8 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "5 · Correlate",
             "Generate factors, guard-bands, report, and plots",
-            "Uses the shared engine. Covariate fields are enabled only for profiles that require them.",
+            "INPUT: the aligned correlation workbook and, when required, a covariate workbook. OUTPUT: a formatted Excel "
+            "report and optional plot folder.",
         )
         profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
         source = tk.StringVar()
@@ -1756,6 +1784,7 @@ class CorrelationDesktopApp:
             "Correlation input",
             source,
             lambda: self._choose_open(source, sheet, sheet_combo),
+            direction="input",
         )
         covariate_combo = self._add_combo(form, 4, "Covariate sheet", covariate_sheet, ())
         covariate_entry, covariate_button = self._add_path(
@@ -1764,6 +1793,7 @@ class CorrelationDesktopApp:
             "Covariate workbook",
             covariate_source,
             lambda: self._choose_open(covariate_source, covariate_sheet, covariate_combo),
+            direction="input",
         )
         ttk.Label(form, textvariable=covariate_hint, style="Hint.TLabel").grid(
             row=4, column=2, pady=7, sticky="w"
@@ -1774,6 +1804,7 @@ class CorrelationDesktopApp:
             "Excel report",
             report,
             lambda: self._choose_save(report, "Save correlation report"),
+            direction="output",
         )
         self._add_path(
             form,
@@ -1781,6 +1812,7 @@ class CorrelationDesktopApp:
             "Plots folder (optional)",
             plots,
             lambda: self._choose_folder(plots, "Select plot output folder"),
+            direction="output",
             button_text="Select…",
         )
 

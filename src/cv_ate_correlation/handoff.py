@@ -12,6 +12,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Protection
 
+from .excel import ACCENT_1_BLUE, format_workbook
 from .models import CorrelationProfile
 
 REQUEST_SHEET = "Measurement_Request"
@@ -56,6 +57,7 @@ def _metadata(profile: CorrelationProfile, row_count: int) -> pd.DataFrame:
 
 
 def _protect_request(path: Path, reference_column: str) -> None:
+    format_workbook(path)
     workbook = load_workbook(path)
     request = workbook[REQUEST_SHEET]
     request.freeze_panes = "A2"
@@ -63,11 +65,10 @@ def _protect_request(path: Path, reference_column: str) -> None:
     request.sheet_view.showGridLines = False
     request.protection.sheet = True
     request.protection.set_password("cv-ate")
-    header_fill = PatternFill("solid", fgColor="1F4E78")
     input_fill = PatternFill("solid", fgColor="FFF2CC")
     for cell in request[1]:
         cell.font = Font(color="FFFFFF", bold=True)
-        cell.fill = header_fill
+        cell.fill = PatternFill("solid", fgColor=ACCENT_1_BLUE)
     reference_index = next(
         cell.column for cell in request[1] if cell.value == reference_column
     )
@@ -75,10 +76,6 @@ def _protect_request(path: Path, reference_column: str) -> None:
         cell = request.cell(row=row, column=reference_index)
         cell.protection = Protection(locked=False)
         cell.fill = input_fill
-    for column_cells in request.columns:
-        sample = list(column_cells[: min(request.max_row, 100)])
-        width = max(len(str(cell.value or "")) for cell in sample) + 2
-        request.column_dimensions[column_cells[0].column_letter].width = min(max(width, 12), 45)
     workbook[METADATA_SHEET].sheet_state = "veryHidden"
     workbook.save(path)
 
@@ -136,6 +133,7 @@ def create_measurement_request(
     with pd.ExcelWriter(manifest_path, engine="openpyxl") as writer:
         manifest.to_excel(writer, index=False, sheet_name=MANIFEST_SHEET)
         metadata.to_excel(writer, index=False, sheet_name=METADATA_SHEET)
+    format_workbook(manifest_path)
     return request, manifest
 
 
