@@ -114,6 +114,56 @@ def attach_covariate(frame: pd.DataFrame, lookup: pd.DataFrame, profile: Correla
     return merged.drop(columns=normalized_keys)
 
 
+def _group_sizes(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
+    if not columns:
+        return pd.Series([len(frame)], dtype="int64")
+    return frame.groupby(columns, dropna=False, sort=True).size()
+
+
+def _minimum_point_error(
+    working: pd.DataFrame,
+    profile: CorrelationProfile,
+    group_columns: list[str],
+    sizes: pd.Series,
+) -> ValueError:
+    distribution = sizes.value_counts().sort_index()
+    distribution_text = ", ".join(
+        f"{int(group_size)} point{'s' if int(group_size) != 1 else ''}: {int(group_count):,} groups"
+        for group_size, group_count in distribution.items()
+    )
+    recommendations: list[tuple[int, int, str]] = []
+    for dimension in profile.group_by:
+        reduced_columns = list(group_columns)
+        reduced_columns.remove(dimension)
+        reduced_sizes = _group_sizes(working, reduced_columns)
+        passing = int((reduced_sizes >= profile.minimum_points).sum())
+        if passing:
+            recommendations.append((int(reduced_sizes.max()), passing, dimension))
+    recommendations.sort(key=lambda item: (-item[0], -item[1], item[2]))
+
+    message = (
+        f"No correlation groups met the minimum point count of {profile.minimum_points}. "
+        f"{len(working):,} valid Lab/CV-to-ATE value pairs formed {len(sizes):,} groups using "
+        f"{', '.join(profile.group_by)}; the largest group contains {int(sizes.max()) if len(sizes) else 0} points. "
+        f"Group-size distribution: {distribution_text or 'no groups'}."
+    )
+    if recommendations:
+        suggestions = "; ".join(
+            f"remove '{dimension}' → {passing:,} groups pass (largest group: {largest})"
+            for largest, passing, dimension in recommendations[:3]
+        )
+        message += (
+            f" Likely over-grouping detected: {suggestions}. Update the profile's Grouping conditions; keep device "
+            "identifiers such as DUT Nr in Detail key columns unless a separate factor per device is intentional."
+        )
+    else:
+        message += (
+            " No single grouping dimension resolves the shortage. Check missing repetitions, selected grouping conditions, "
+            "and Minimum points/group. Lower the minimum only when scientifically justified."
+        )
+    return ValueError(message)
+
+
 def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> CorrelationResult:
     required = set(profile.group_by) | {profile.reference_column, profile.candidate_column}
     if profile.test_policies:
@@ -135,7 +185,16 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
         working["__TestPolicyIndex"] = working.apply(_test_policy_index, axis=1, profile=profile)
     working[profile.reference_column] = _to_numeric(working[profile.reference_column])
     working[profile.candidate_column] = _to_numeric(working[profile.candidate_column])
-    working = working.dropna(subset=[profile.reference_column, profile.candidate_column])
+    valid_pairs = working[profile.reference_column].notna() & working[profile.candidate_column].notna()
+    if not valid_pairs.any():
+        reference_count = int(working[profile.reference_column].notna().sum())
+        candidate_count = int(working[profile.candidate_column].notna().sum())
+        raise ValueError(
+            f"No rows contain numeric values in both '{profile.reference_column}' and "
+            f"'{profile.candidate_column}'. Numeric rows: {reference_count:,} reference, "
+            f"{candidate_count:,} ATE, from {len(working):,} input rows."
+        )
+    working = working.loc[valid_pairs].copy()
 
     summary_rows: list[dict[str, Any]] = []
     detail_frames: list[pd.DataFrame] = []
@@ -143,6 +202,9 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
     if profile.test_policies:
         group_columns.append("__TestPolicyIndex")
     grouped = working.groupby(group_columns, dropna=False, sort=True)
+    group_sizes = grouped.size()
+    if not (group_sizes >= profile.minimum_points).any():
+        raise _minimum_point_error(working, profile, group_columns, group_sizes)
     for raw_key, raw_group in grouped:
         group = raw_group.copy()
         if len(group) < profile.minimum_points:
@@ -234,6 +296,4 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
         details["GroupIndex"] = len(summary_rows) - 1
         detail_frames.append(details)
 
-    if not summary_rows:
-        raise ValueError("No correlation groups met the minimum point count")
     return CorrelationResult(pd.DataFrame(summary_rows), pd.concat(detail_frames, ignore_index=True))

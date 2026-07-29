@@ -1,4 +1,4 @@
-"""Protected measurement-request handoff with strict one-to-one result import."""
+"""Editable measurement-request handoff with strict one-to-one result import."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from openpyxl import load_workbook
+from openpyxl.comments import Comment
+from openpyxl.workbook.workbook import Workbook
 from openpyxl.styles import Font, PatternFill, Protection
 
-from .excel import ACCENT_1_BLUE, format_workbook
+from .excel import ACCENT_1_BLUE, format_worksheet
 from .models import CorrelationProfile
 
 REQUEST_SHEET = "Measurement_Request"
@@ -56,28 +57,39 @@ def _metadata(profile: CorrelationProfile, row_count: int) -> pd.DataFrame:
     })
 
 
-def _protect_request(path: Path, reference_column: str) -> None:
-    format_workbook(path)
-    workbook = load_workbook(path)
+def _prepare_request(workbook: Workbook, reference_column: str) -> None:
+    for worksheet in workbook.worksheets:
+        format_worksheet(worksheet)
     request = workbook[REQUEST_SHEET]
     request.freeze_panes = "A2"
     request.auto_filter.ref = request.dimensions
     request.sheet_view.showGridLines = False
-    request.protection.sheet = True
-    request.protection.set_password("cv-ate")
+    request.protection.sheet = False
     input_fill = PatternFill("solid", fgColor="FFF2CC")
+    identifier_fill = PatternFill("solid", fgColor="E7E6E6")
     for cell in request[1]:
         cell.font = Font(color="FFFFFF", bold=True)
         cell.fill = PatternFill("solid", fgColor=ACCENT_1_BLUE)
+    request_id_index = next(cell.column for cell in request[1] if cell.value == REQUEST_ID)
     reference_index = next(
         cell.column for cell in request[1] if cell.value == reference_column
     )
-    for row in range(2, request.max_row + 1):
-        cell = request.cell(row=row, column=reference_index)
-        cell.protection = Protection(locked=False)
-        cell.fill = input_fill
+    max_row = request.max_row
+    max_column = request.max_column
+    unlocked = Protection(locked=False)
+    for row in range(1, max_row + 1):
+        for column in range(1, max_column + 1):
+            request.cell(row=row, column=column).protection = unlocked
+    for row in range(2, max_row + 1):
+        request.cell(row=row, column=request_id_index).fill = identifier_fill
+        request.cell(row=row, column=reference_index).fill = input_fill
+    request.cell(row=1, column=request_id_index).comment = Comment(
+        "WARNING: Do not modify any Measurement_Request_ID value. These IDs are required to align returned CV "
+        "measurements with the internal ATE manifest. The worksheet is intentionally unprotected so all cells can "
+        "be selected, filtered, grouped, and sorted.",
+        "CorreLaTE",
+    )
     workbook[METADATA_SHEET].sheet_state = "veryHidden"
-    workbook.save(path)
 
 
 def create_measurement_request(
@@ -120,20 +132,23 @@ def create_measurement_request(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = _metadata(profile, len(request))
     instructions = pd.DataFrame({"Instructions": [
+        f"WARNING: Do not modify values in the '{REQUEST_ID}' column; they are required for one-to-one alignment.",
         f"Enter one numeric result in the yellow '{profile.reference_column}' column for every row.",
-        f"Do not modify '{REQUEST_ID}' or '{REPEAT_INDEX}'. They are validated as a one-to-one key.",
+        f"Do not modify '{REPEAT_INDEX}'. It is also validated as part of the one-to-one key.",
         "Do not add, remove, or duplicate request rows.",
+        "The worksheet is unprotected; select all cells and use header filters or Data > Sort for hierarchical grouping.",
         "Return this workbook to TE; ATE values are retained only in the separate internal manifest.",
     ]})
     with pd.ExcelWriter(request_path, engine="openpyxl") as writer:
         request.to_excel(writer, index=False, sheet_name=REQUEST_SHEET)
         instructions.to_excel(writer, index=False, sheet_name="Instructions")
         metadata.to_excel(writer, index=False, sheet_name=METADATA_SHEET)
-    _protect_request(request_path, profile.reference_column)
+        _prepare_request(writer.book, profile.reference_column)
     with pd.ExcelWriter(manifest_path, engine="openpyxl") as writer:
         manifest.to_excel(writer, index=False, sheet_name=MANIFEST_SHEET)
         metadata.to_excel(writer, index=False, sheet_name=METADATA_SHEET)
-    format_workbook(manifest_path)
+        for worksheet in writer.book.worksheets:
+            format_worksheet(worksheet)
     return request, manifest
 
 

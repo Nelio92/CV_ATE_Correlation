@@ -1213,6 +1213,16 @@ class CorrelationDesktopApp:
             grouping_frame, 8, "Identified value type", condition_cast,
             tuple(GROUPING_VALUE_TYPES), readonly=True,
         )
+        ttk.Label(
+            grouping_frame,
+            text=(
+                "Important: every enabled condition splits the data into smaller correlation groups. Device identifiers "
+                "such as DUT Nr normally belong in Detail key columns, unless a separate factor per DUT is intentional "
+                "and each DUT has at least Minimum points/group repetitions."
+            ),
+            style="Hint.TLabel",
+            wraplength=760,
+        ).grid(row=9, column=1, columnspan=2, pady=(8, 2), sticky="w")
 
         def method_hint(method: str) -> str:
             return {
@@ -1612,7 +1622,7 @@ class CorrelationDesktopApp:
     def _build_request_tab(self) -> None:
         form = self._make_tab(
             "3 · Create CV Request",
-            "Create a protected CV measurement request",
+            "Create an editable CV measurement request",
             "INPUT: the extracted ATE workbook. OUTPUT: a CV request to send to Lab/CV and a separate internal ATE "
             "manifest to keep for Step 4; the manifest is generated here, not loaded.",
         )
@@ -1687,7 +1697,7 @@ class CorrelationDesktopApp:
                 )
                 return f"Created {len(request):,} CV requests and the separate internal ATE manifest."
 
-            self._start_job(run_button, "Creating protected CV request…", action)
+            self._start_job(run_button, "Creating editable CV request…", action)
 
         run_button = ttk.Button(form, text="Create request", command=run)
         run_button.grid(row=6, column=1, pady=(18, 0), sticky="e")

@@ -48,7 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
     correlate.add_argument("--output", required=True, type=Path)
     correlate.add_argument("--plots", type=Path)
 
-    request = subparsers.add_parser("request", help="Generate a protected CV request and TE-only ATE manifest")
+    request = subparsers.add_parser("request", help="Generate an editable CV request and TE-only ATE manifest")
     request.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
     request.add_argument("--input", required=True, type=Path)
     request.add_argument("--sheet", required=True)

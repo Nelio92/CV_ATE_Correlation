@@ -24,7 +24,9 @@ def format_worksheet(
     max_width: int = DEFAULT_MAX_WIDTH,
 ) -> None:
     """Apply Accent 1 headers, filters, frozen headers, and bounded autofit."""
-    if worksheet.max_row < 1 or worksheet.max_column < 1:
+    max_row = worksheet.max_row
+    max_column = worksheet.max_column
+    if max_row < 1 or max_column < 1:
         return
 
     header_fill = PatternFill(fill_type="solid", fgColor=ACCENT_1_BLUE)
@@ -34,22 +36,21 @@ def format_worksheet(
         cell.alignment = Alignment(vertical="center")
 
     worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
+    worksheet.auto_filter.ref = f"A1:{get_column_letter(max_column)}{max_row}"
     worksheet.sheet_view.showGridLines = False
 
-    for column_index in range(1, worksheet.max_column + 1):
-        longest = 0
-        for cells in worksheet.iter_rows(
-            min_col=column_index,
-            max_col=column_index,
-            min_row=1,
-            max_row=worksheet.max_row,
-        ):
-            value = cells[0].value
+    longest_by_column = [0] * max_column
+    for row in worksheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column):
+        for column_offset, cell in enumerate(row):
+            value = cell.value
             if value is None:
                 continue
             lines = str(value).splitlines() or [""]
-            longest = max(longest, *(len(line) for line in lines))
+            longest_by_column[column_offset] = max(
+                longest_by_column[column_offset],
+                *(len(line) for line in lines),
+            )
+    for column_index, longest in enumerate(longest_by_column, start=1):
         width = min(max(longest + 2, min_width), max_width)
         worksheet.column_dimensions[get_column_letter(column_index)].width = width
 
@@ -73,5 +74,6 @@ def write_dataframe_workbook(
     with pd.ExcelWriter(destination, engine="openpyxl") as writer:
         for sheet_name, frame in sheets.items():
             frame.to_excel(writer, index=False, sheet_name=sheet_name)
-    format_workbook(destination)
+        for worksheet in writer.book.worksheets:
+            format_worksheet(worksheet)
     return destination

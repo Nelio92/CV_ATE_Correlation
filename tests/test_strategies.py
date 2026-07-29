@@ -145,3 +145,44 @@ def test_overlapping_test_set_policies_are_rejected_at_runtime() -> None:
 
     with pytest.raises(ValueError, match="Multiple test-set policies"):
         correlate_frame(frame, profile)
+
+
+def test_minimum_point_error_identifies_over_grouping_dimension() -> None:
+    rows = [
+        {"DUT Nr": dut, "Test Number": 101, "Temperature": temperature, "reference": dut + 0.1, "ate": dut}
+        for dut in range(1, 12)
+        for temperature in (135, 135, 25, 25, -40)
+    ]
+    profile = CorrelationProfile(
+        name="over-grouped",
+        strategy="median_offset",
+        reference_column="reference",
+        candidate_column="ate",
+        group_by=("DUT Nr", "Test Number", "Temperature"),
+        minimum_points=5,
+    )
+
+    with pytest.raises(ValueError) as captured:
+        correlate_frame(pd.DataFrame(rows), profile)
+
+    message = str(captured.value)
+    assert "55 valid Lab/CV-to-ATE value pairs formed 33 groups" in message
+    assert "largest group contains 2 points" in message
+    assert "remove 'DUT Nr'" in message
+    assert "3 groups pass (largest group: 22)" in message
+    assert "keep device identifiers such as DUT Nr in Detail key columns" in message
+
+
+def test_empty_numeric_pair_error_reports_each_value_column() -> None:
+    frame = pd.DataFrame({"group": ["A", "A"], "reference": ["", "N/A"], "ate": [1.0, 2.0]})
+    profile = CorrelationProfile(
+        name="invalid values",
+        strategy="median_offset",
+        reference_column="reference",
+        candidate_column="ate",
+        group_by=("group",),
+        minimum_points=1,
+    )
+
+    with pytest.raises(ValueError, match="Numeric rows: 0 reference, 2 ATE, from 2 input rows"):
+        correlate_frame(frame, profile)
