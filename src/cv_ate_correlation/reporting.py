@@ -44,8 +44,11 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
     count = 0
     for group_index, details in result.details.groupby("GroupIndex", sort=True):
         summary = result.summary.iloc[int(group_index)]
+        sort_columns = [column for column in profile.detail_key_columns if column in details.columns]
+        if sort_columns:
+            details = details.sort_values(sort_columns, kind="stable")
         fig, (raw_axis, corrected_axis) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-        sample = range(len(details))
+        sample = range(1, len(details) + 1)
         raw_axis.plot(sample, details["ReferenceValue"], "o-", label="Reference")
         raw_axis.plot(sample, details["CandidateValue"], "s--", label="ATE")
         raw_axis.set_ylabel(summary.get("Unit", "") or "Value")
@@ -64,7 +67,9 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
         title_fields = [*profile.group_by]
         if summary.get("TestSet"):
             title_fields.append("TestSet")
-        title = " | ".join(f"{key}={summary[key]}" for key in title_fields)
+        title = " | ".join(
+            [*(f"{key}={summary[key]}" for key in title_fields), f"Samples={len(details)}"]
+        )
         fig.suptitle(title)
         fig.tight_layout()
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("_")[:180]

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 
+from cv_ate_correlation.correlation import correlate_frame
 from cv_ate_correlation.gui import APPLICATION_TITLE
 from cv_ate_correlation.profile_store import (
     delete_custom_profile,
@@ -86,7 +88,7 @@ def test_custom_profile_builds_extraction_and_correlation_models() -> None:
     assert extraction.insertions[0].temperature == 125
     assert correlation.reference_column == "Lab Current"
     assert correlation.candidate_column == "Test Value"
-    assert correlation.group_by == ("Test Number", "Temperature", "Voltage corner")
+    assert correlation.group_by == ("Test Number", "Voltage corner", "Insertion", "Temperature")
     assert correlation.minimum_points == 3
     assert correlation.covariate is None
 
@@ -100,6 +102,35 @@ def test_be_fuse_coordinate_fallback_is_the_custom_profile_default() -> None:
 
     assert extraction.coordinate_fallback == {"WAFER": "62007", "X": "62008", "Y": "62009"}
     assert extraction.fallback_insertion_values == ("BE",)
+
+
+def test_insertions_at_the_same_temperature_are_separate_correlation_groups() -> None:
+    spec = custom_spec()
+    spec["insertions"] = [
+        {"name": "S1", "group": "FE", "temperature": 125, "raw_files": [__file__]},
+        {"name": "B1", "group": "BE", "temperature": 125, "raw_files": [str(__file__) + ".other"]},
+    ]
+    _extraction, correlation = profile_spec_to_models("my-current", spec)
+    frame = pd.DataFrame([
+        {
+            "DUT Nr": dut,
+            "Test Number": 101,
+            "Voltage corner": "VMIN",
+            "Insertion": insertion,
+            "Temperature": 125,
+            "Lab Current": dut + 0.1,
+            "Test Value": dut,
+            "Test Name": "LeakageCurrent",
+        }
+        for insertion in ("S1", "B1")
+        for dut in range(1, 12)
+    ])
+
+    result = correlate_frame(frame, correlation)
+
+    assert len(result.summary) == 2
+    assert set(result.summary["Insertion"]) == {"S1", "B1"}
+    assert set(result.summary["Count"]) == {11}
 
 
 def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:

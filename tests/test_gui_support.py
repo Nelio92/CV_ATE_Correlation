@@ -58,10 +58,12 @@ def test_profile_editor_exposes_standard_grouping_conditions() -> None:
     assert correlation_group_columns(("Test Number", "Frequency_GHz")) == (
         "Test Number",
         "Frequency_GHz",
+        "Insertion",
         "Temperature",
     )
-    assert correlation_group_columns(("Test Number", "Temperature")) == (
+    assert correlation_group_columns(("Test Number", "Temperature", "Insertion")) == (
         "Test Number",
+        "Insertion",
         "Temperature",
     )
 
@@ -212,9 +214,15 @@ def test_legacy_saved_temperature_condition_is_removed() -> None:
                 "source": "existing",
                 "method": "existing",
             },
+            {
+                "key": "insertion",
+                "label": "Insertion",
+                "column": "Insertion",
+                "enabled": True,
+            },
         ],
     })
-    assert all(item["column"] != "Temperature" for item in definitions)
+    assert all(item["column"] not in {"Insertion", "Temperature"} for item in definitions)
 
 
 def test_custom_grouping_condition_supports_optional_advanced_regex() -> None:

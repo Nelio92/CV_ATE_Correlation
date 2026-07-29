@@ -289,6 +289,12 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
             raw_files,
         ))
 
+    if insertion_profiles:
+        # Insertions are separate measurement campaigns. Never merge two
+        # insertions merely because they share the same temperature.
+        manual_groups = tuple(column for column in group_by if column not in {"Insertion", "Temperature"})
+        group_by = (*manual_groups, "Insertion", "Temperature")
+
     extraction = ExtractionProfile(
         name=display_name,
         selector=extraction_selector,

@@ -319,8 +319,8 @@ def grouping_condition_definitions(spec: Mapping[str, Any]) -> list[dict[str, An
             dict(item)
             for item in saved
             if isinstance(item, dict)
-            and str(item.get("key", "")).casefold() != "temperature"
-            and str(item.get("column", "")).casefold() != "temperature"
+            and str(item.get("key", "")).casefold() not in {"insertion", "temperature"}
+            and str(item.get("column", "")).casefold() not in {"insertion", "temperature"}
         ]
         by_key = {str(item.get("key", "")): item for item in definitions}
         for option in GROUPING_CONDITION_OPTIONS:
@@ -342,8 +342,8 @@ def grouping_condition_definitions(spec: Mapping[str, Any]) -> list[dict[str, An
     selected = _split_group_columns(spec.get("group_by", ""))
     state = grouping_condition_state(spec)
     definitions: list[dict[str, Any]] = []
-    # Temperature is supplied by Insertions and is no longer an editable grouping condition.
-    recognized: set[str] = {"Temperature"}
+    # Insertion and Temperature are supplied by Insertions and are not editable grouping conditions.
+    recognized: set[str] = {"Insertion", "Temperature"}
     for option in GROUPING_CONDITION_OPTIONS:
         enabled, column = state[option.key]
         if enabled:
@@ -465,8 +465,9 @@ def compile_grouping_conditions(
 
 
 def correlation_group_columns(selected: tuple[str, ...]) -> tuple[str, ...]:
-    """Add insertion-derived Temperature once without exposing it as a selectable condition."""
-    return tuple(dict.fromkeys((*selected, "Temperature")))
+    """Separate insertion campaigns and temperatures without exposing them as selectable conditions."""
+    manual = tuple(column for column in selected if column not in {"Insertion", "Temperature"})
+    return (*manual, "Insertion", "Temperature")
 
 
 def workbook_sheet_names(path: str | Path) -> tuple[str, ...]:

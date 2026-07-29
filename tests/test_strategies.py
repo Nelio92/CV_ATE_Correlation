@@ -15,7 +15,7 @@ from cv_ate_correlation.models import (
 )
 from cv_ate_correlation.correlation import correlate_frame
 from cv_ate_correlation.excel import ACCENT_1_BLUE
-from cv_ate_correlation.reporting import write_excel_report
+from cv_ate_correlation.reporting import write_excel_report, write_plots
 
 
 def test_mean_delta_and_worst_case_upper_limit() -> None:
@@ -186,3 +186,26 @@ def test_empty_numeric_pair_error_reports_each_value_column() -> None:
 
     with pytest.raises(ValueError, match="Numeric rows: 0 reference, 2 ATE, from 2 input rows"):
         correlate_frame(frame, profile)
+
+
+def test_plot_title_reports_one_based_sample_count(tmp_path: Path) -> None:
+    frame = pd.DataFrame({
+        "DUT Nr": range(1, 6),
+        "group": ["A"] * 5,
+        "reference": [2, 3, 4, 5, 6],
+        "ate": [1, 2, 3, 4, 5],
+    })
+    profile = CorrelationProfile(
+        name="plot samples",
+        strategy="mean_delta",
+        reference_column="reference",
+        candidate_column="ate",
+        group_by=("group",),
+        detail_key_columns=("DUT Nr",),
+        minimum_points=5,
+    )
+
+    count = write_plots(correlate_frame(frame, profile), profile, tmp_path)
+
+    assert count == 1
+    assert [path.name for path in tmp_path.glob("*.png")] == ["group_A_Samples_5.png"]

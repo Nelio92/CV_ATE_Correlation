@@ -171,9 +171,11 @@ Each grouping condition has an editable input-column name. The defaults use comm
 `Voltage corner`; alternatives such as `PA Channel`, `LUT value`, or a project-specific column can be entered directly. Its
 identification source and rule are configured in the same box. Every manually entered field in the GUI includes a short
 description and example value; browse controls and fixed dropdown lists are self-describing and therefore omit those hints.
-`Temperature` is not a selectable grouping condition: CorreLaTE derives it from each insertion and automatically includes it
-in correlation grouping. Profile validation requires at least one existing raw file for every insertion and rejects duplicate
-insertion names or a raw file assigned to more than one insertion.
+`Insertion` and `Temperature` are not selectable grouping conditions: CorreLaTE derives both and automatically includes them
+in correlation grouping. Keeping the insertion name prevents separate campaigns that share a temperature—such as FE `S1`
+and BE `B1` at 135 °C—from being combined into one plot. Profile validation requires at least one existing raw file for
+every insertion and rejects duplicate insertion names or a raw file assigned to more than one insertion. Plot titles include
+the insertion and explicit sample count.
 
 For `BE` insertions, CorreLaTE automatically falls back to the FUSE metadata columns when the normal chip-coordinate values
 are blank or their columns are absent: test number `62007` supplies `WAFER`, `62008` supplies `X`, and `62009` supplies `Y`.
@@ -255,7 +257,7 @@ The current suite validates:
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
-The complete suite currently contains 43 tests, including profile parsing, insertion validation and extraction, persistence,
+The complete suite currently contains 45 tests, including profile parsing, insertion validation and extraction, persistence,
 built-in protection, and runtime registry integration. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
 differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
 separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).
