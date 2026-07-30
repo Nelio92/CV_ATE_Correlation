@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CorreLaTE Prism Align</title>
+  <desc id="desc">Scattered measurements pass through a correlation prism and align.</desc>
+  <defs>
+    <linearGradient id="prism" x1="47" y1="29" x2="84" y2="101" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173F73" stop-opacity=".95"/><stop offset=".52" stop-color="#278F9E" stop-opacity=".84"/><stop offset="1" stop-color="#52C17F" stop-opacity=".9"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#10243D" flood-opacity=".24"/></filter>
+  </defs>
+  <g fill="#38A6E8">
+    <circle cx="15" cy="35" r="6"/><circle cx="24" cy="62" r="5"/><circle cx="15" cy="91" r="7"/>
+  </g>
+  <g fill="#61C788">
+    <circle cx="35" cy="26" r="5"/><circle cx="36" cy="52" r="7"/><circle cx="35" cy="98" r="5"/>
+  </g>
+  <path d="M60 17L93 105H37L60 17Z" fill="url(#prism)" stroke="#fff" stroke-width="3" stroke-linejoin="round" filter="url(#shadow)"/>
+  <path d="M13 94L109 30" stroke="#F2B544" stroke-width="8" stroke-linecap="round"/>
+  <g fill="#fff" stroke="#F2B544" stroke-width="4">
+    <circle cx="71" cy="56" r="6"/><circle cx="86" cy="46" r="6"/><circle cx="102" cy="35" r="6"/>
+  </g>
+  <path d="M101 24l13 4-3 13" fill="none" stroke="#173F73" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

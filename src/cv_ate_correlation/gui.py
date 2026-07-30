@@ -56,6 +56,14 @@ from cv_ate_correlation.reporting import write_excel_report, write_plots
 
 Action = Callable[[], str]
 APPLICATION_TITLE = "CorreLaTE: ATE-to-Lab Correlation"
+LOGO_ASSET_SIZES = (64, 256)
+
+
+def logo_asset_path(size: int = 64) -> Path:
+    """Return the packaged Prism Align logo at a supported pixel size."""
+    if size not in LOGO_ASSET_SIZES:
+        raise ValueError(f"Unsupported logo size {size}; choose one of {LOGO_ASSET_SIZES}")
+    return Path(__file__).resolve().with_name("assets") / f"correlate-prism-align-{size}.png"
 
 
 @dataclass(frozen=True)
@@ -532,6 +540,8 @@ class CorrelationDesktopApp:
         self.root.minsize(760, 500)
 
         style = ttk.Style(root)
+        style.configure("BrandTitle.TLabel", foreground="#173F73", font=("Segoe UI", 22, "bold"))
+        style.configure("BrandSubtitle.TLabel", foreground="#278F9E", font=("Segoe UI", 10))
         style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
         style.configure("Hint.TLabel", foreground="#555555")
         style.configure("Input.TLabel", foreground="#1F4E78", font=("Segoe UI", 9, "bold"))
@@ -539,8 +549,17 @@ class CorrelationDesktopApp:
         style.configure("Input.TEntry", fieldbackground="#EAF2F8")
         style.configure("Output.TEntry", fieldbackground="#EAF4EA")
 
+        self._window_icon = self._load_logo(256)
+        if self._window_icon is not None:
+            try:
+                self.root.iconphoto(True, self._window_icon)
+            except tk.TclError:
+                self._window_icon = None
+        self._header_logo = self._load_logo(64)
+        self._build_brand_header()
+
         self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(8, 6))
 
         self.status = tk.StringVar(value="Ready")
         status_frame = ttk.Frame(root, padding=(12, 4, 12, 10))
@@ -560,6 +579,32 @@ class CorrelationDesktopApp:
         self._build_request_tab()
         self._build_import_tab()
         self._build_correlation_tab()
+
+    def _load_logo(self, size: int) -> tk.PhotoImage | None:
+        path = logo_asset_path(size)
+        if not path.is_file():
+            return None
+        try:
+            return tk.PhotoImage(master=self.root, file=str(path))
+        except tk.TclError:
+            return None
+
+    def _build_brand_header(self) -> None:
+        header = ttk.Frame(self.root, padding=(16, 10, 16, 8))
+        header.pack(fill="x")
+        text_column = 0
+        if self._header_logo is not None:
+            ttk.Label(header, image=self._header_logo).grid(
+                row=0, column=0, rowspan=2, padx=(0, 12), sticky="w"
+            )
+            text_column = 1
+        ttk.Label(header, text="CorreLaTE", style="BrandTitle.TLabel").grid(
+            row=0, column=text_column, sticky="sw"
+        )
+        ttk.Label(header, text="ATE-to-Lab Correlation", style="BrandSubtitle.TLabel").grid(
+            row=1, column=text_column, pady=(0, 3), sticky="nw"
+        )
+        ttk.Separator(self.root, orient="horizontal").pack(fill="x")
 
     def _make_tab(self, title: str, heading: str, hint: str) -> ttk.Frame:
         scrollable = ScrollablePage(self.notebook, padding=18)

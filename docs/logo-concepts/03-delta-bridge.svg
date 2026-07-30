@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CorreLaTE Delta Bridge</title>
+  <desc id="desc">A delta bridge joins ATE and Lab measurements into one result.</desc>
+  <defs>
+    <linearGradient id="delta" x1="20" y1="105" x2="108" y2="22" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173F73"/><stop offset="1" stop-color="#38A6E8"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="25" y1="28" x2="102" y2="101" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#63C985"/><stop offset="1" stop-color="#1F7B56"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#10243D" flood-opacity=".25"/></filter>
+  </defs>
+  <path d="M64 15L111 105H17L64 15Z" fill="none" stroke="url(#delta)" stroke-width="9" stroke-linejoin="round" filter="url(#shadow)"/>
+  <path d="M31 90C43 68 48 56 64 56s21 12 33 34" fill="none" stroke="url(#bridge)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M38 90h52" stroke="#F2B544" stroke-width="7" stroke-linecap="round"/>
+  <g fill="#fff" stroke-width="4">
+    <circle cx="31" cy="90" r="7" stroke="#173F73"/><circle cx="64" cy="56" r="8" stroke="#41AB74"/>
+    <circle cx="97" cy="90" r="7" stroke="#2F88BC"/>
+  </g>
+  <circle cx="64" cy="90" r="8" fill="#F2B544" stroke="#fff" stroke-width="3"/>
+</svg>

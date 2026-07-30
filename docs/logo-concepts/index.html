@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CorreLaTE — Logo Concepts</title>
+  <style>
+    :root { color-scheme: light; --ink:#10243d; --muted:#62748a; --blue:#173f73; --green:#2e7d52; --gold:#f2b544; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; font-family:"Segoe UI",Inter,Arial,sans-serif; color:var(--ink); background:
+      radial-gradient(circle at 8% 5%,rgba(56,166,232,.18),transparent 28rem),
+      radial-gradient(circle at 95% 90%,rgba(82,193,127,.17),transparent 30rem),#f5f8fc; }
+    main { width:min(1240px,calc(100% - 40px)); margin:auto; padding:56px 0 72px; }
+    header { display:flex; gap:30px; align-items:end; justify-content:space-between; margin-bottom:32px; }
+    .eyebrow { color:var(--green); font-weight:800; letter-spacing:.16em; text-transform:uppercase; font-size:12px; }
+    h1 { margin:8px 0 8px; font-size:clamp(34px,5vw,64px); line-height:.98; letter-spacing:-.05em; }
+    header p { max-width:670px; margin:0; color:var(--muted); font-size:17px; line-height:1.6; }
+    .palette { display:flex; gap:8px; padding-bottom:8px; }
+    .palette i { display:block; width:22px; height:22px; border-radius:50%; box-shadow:0 2px 8px #10243d33; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px; }
+    article { position:relative; overflow:hidden; background:rgba(255,255,255,.9); border:1px solid #dbe5ef; border-radius:24px; box-shadow:0 18px 45px rgba(16,36,61,.09); transition:.25s ease; }
+    article:hover { transform:translateY(-5px); box-shadow:0 24px 55px rgba(16,36,61,.16); border-color:#b7d0e2; }
+    .number { position:absolute; top:18px; left:20px; z-index:2; display:grid; place-items:center; width:34px; height:34px; border-radius:11px; background:var(--ink); color:white; font-weight:800; }
+    .stage { min-height:238px; display:grid; place-items:center; padding:32px 26px 18px; background:linear-gradient(145deg,#fff,#eef5fa); }
+    .stage img { width:150px; height:150px; filter:drop-shadow(0 9px 12px rgba(16,36,61,.11)); }
+    .wordmark { display:flex; align-items:center; justify-content:center; gap:10px; min-height:64px; margin-top:5px; font-size:27px; font-weight:750; letter-spacing:-.035em; }
+    .wordmark img { width:42px; height:42px; filter:none; }
+    .wordmark b { color:var(--green); font-weight:800; }
+    .copy { padding:20px 24px 25px; border-top:1px solid #e3ebf2; }
+    h2 { margin:0 0 7px; font-size:21px; letter-spacing:-.02em; }
+    .copy p { margin:0; min-height:48px; color:var(--muted); line-height:1.5; font-size:14px; }
+    .tags { display:flex; flex-wrap:wrap; gap:7px; margin-top:16px; }
+    .tags span { padding:6px 9px; border-radius:999px; background:#edf4f8; color:#37536d; font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+    footer { margin-top:28px; padding:20px 24px; border:1px solid #dae5ee; border-radius:18px; background:#fff9; color:var(--muted); line-height:1.6; }
+    footer strong { color:var(--ink); }
+    @media (max-width:930px) { .grid{grid-template-columns:repeat(2,minmax(0,1fr))} header{align-items:start;flex-direction:column}.palette{display:none} }
+    @media (max-width:600px) { main{width:min(100% - 24px,1240px);padding-top:32px}.grid{grid-template-columns:1fr}.stage{min-height:215px} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow">Visual identity exploration · Round 01</div>
+      <h1>Choose the mark<br>that fits the data.</h1>
+      <p>Six original icon concepts for CorreLaTE. Each combines ATE blue, Lab green, and a golden correlation result—and is designed to remain recognizable beside the product name.</p>
+    </div>
+    <div class="palette" aria-label="Logo palette"><i style="background:#173f73"></i><i style="background:#38a6e8"></i><i style="background:#2e7d52"></i><i style="background:#63c986"></i><i style="background:#f2b544"></i></div>
+  </header>
+
+  <section class="grid">
+    <article>
+      <div class="number">01</div>
+      <div class="stage"><img src="01-convergence.svg" alt="Convergence logo"><div class="wordmark"><img src="01-convergence.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Convergence</h2><p>Two independent measurement streams become one validated, correlated result.</p><div class="tags"><span>Direct</span><span>Scientific</span><span>Trust</span></div></div>
+    </article>
+    <article>
+      <div class="number">02</div>
+      <div class="stage"><img src="02-orbit-fit.svg" alt="Orbit Fit logo"><div class="wordmark"><img src="02-orbit-fit.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Orbit Fit</h2><p>Observations orbit a precise golden fit line, balancing motion and rigor.</p><div class="tags"><span>Dynamic</span><span>Precise</span><span>Premium</span></div></div>
+    </article>
+    <article>
+      <div class="number">03</div>
+      <div class="stage"><img src="03-delta-bridge.svg" alt="Delta Bridge logo"><div class="wordmark"><img src="03-delta-bridge.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Delta Bridge</h2><p>A mathematical delta and bridge express correction, limits, and alignment.</p><div class="tags"><span>Technical</span><span>Bold</span><span>ATE</span></div></div>
+    </article>
+    <article>
+      <div class="number">04</div>
+      <div class="stage"><img src="04-prism-align.svg" alt="Prism Align logo"><div class="wordmark"><img src="04-prism-align.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Prism Align</h2><p>Scattered raw values pass through the model and emerge aligned to the fit.</p><div class="tags"><span>Transform</span><span>Analytical</span><span>Modern</span></div></div>
+    </article>
+    <article>
+      <div class="number">05</div>
+      <div class="stage"><img src="05-correlation-knot.svg" alt="Correlation Knot logo"><div class="wordmark"><img src="05-correlation-knot.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Correlation Knot</h2><p>ATE and Lab ribbons interlock in a memorable, continuous relationship.</p><div class="tags"><span>Iconic</span><span>Connected</span><span>Friendly</span></div></div>
+    </article>
+    <article>
+      <div class="number">06</div>
+      <div class="stage"><img src="06-signal-bloom.svg" alt="Signal Bloom logo"><div class="wordmark"><img src="06-signal-bloom.svg" alt=""><span>Corre<b>LaTE</b></span></div></div>
+      <div class="copy"><h2>Signal Bloom</h2><p>Correlated observations bloom around a confident golden regression path.</p><div class="tags"><span>Artistic</span><span>Optimistic</span><span>Distinctive</span></div></div>
+    </article>
+  </section>
+
+  <footer><strong>Selection format:</strong> reply with a number, for example “Logo 02.” The selected mark can then be refined, exported as transparent PNG/ICO assets, and inserted directly before “CorreLaTE” in the application header.</footer>
+</main>
+</body>
+</html>

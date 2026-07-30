@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CorreLaTE Correlation Knot</title>
+  <desc id="desc">ATE and Lab ribbons interlock as a continuous correlation knot.</desc>
+  <defs>
+    <linearGradient id="a" x1="17" y1="36" x2="112" y2="93" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173F73"/><stop offset="1" stop-color="#38A6E8"/>
+    </linearGradient>
+    <linearGradient id="b" x1="20" y1="96" x2="108" y2="33" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E754D"/><stop offset="1" stop-color="#66CA8B"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#10243D" flood-opacity=".24"/></filter>
+  </defs>
+  <path d="M20 42C39 18 59 32 75 56s29 31 40 13" fill="none" stroke="url(#a)" stroke-width="15" stroke-linecap="round" filter="url(#shadow)"/>
+  <path d="M20 86C39 110 59 96 75 72s29-31 40-13" fill="none" stroke="url(#b)" stroke-width="15" stroke-linecap="round" filter="url(#shadow)"/>
+  <path d="M54 47c8 4 14 12 21 25" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+  <circle cx="75" cy="64" r="11" fill="#F2B544" stroke="#fff" stroke-width="4"/>
+  <path d="M70 64l4 4 7-9" fill="none" stroke="#173F73" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
