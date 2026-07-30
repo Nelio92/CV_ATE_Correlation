@@ -74,18 +74,20 @@ EXTRACTION_PROFILES = {
     "ctrx8188-kf": _extraction("CTRX8188 Kf", TestSelector(exact=(52046, 52084, 52094))),
     "ctrx8188-txlo": _extraction(
         "CTRX8188 TXLO power",
-        TestSelector(ranges=((57006, 57009), (57039, 57051), (57099, 57111), (57159, 57171),
-                             (57219, 57231), (57279, 57291), (57339, 57351))),
+        TestSelector(exact=(52046,), ranges=((57006, 57009), (57039, 57051), (57099, 57111), (57159, 57171),
+                                              (57219, 57231), (57279, 57291), (57339, 57351))),
     ),
     "ctrx8188-txpa": _extraction(
         "CTRX8188 TXPA power",
-            TestSelector(exact=(52046, 52084, 52094), ranges=((53171, 53290), (53719, 53838), (54139, 54258),
+            TestSelector(exact=(52046,), ranges=((53171, 53290), (53719, 53838), (54139, 54258),
                              (54489, 54608), (55139, 55258), (55489, 55608))),
     ),
 }
 
 _DETAIL_KEYS = ("DUT Nr", "Wafer", "X", "Y", "Temperature", "Voltage corner", "Frequency_GHz", "Test Number")
-_COVARIATE = CovariateProfile("Test Value", ("DUT Nr", "Temperature"), "Kf")
+_COVARIATE = CovariateProfile(
+    "Test Value", ("DUT Nr", "Temperature", "Insertion Type"), "Kf", 52046
+)
 
 _TXLO_RULE = RequirementRule(
     when={"LO IDAC": (112,)}, lower=9.0, upper=16.0,
@@ -115,7 +117,7 @@ _TXPA_RULE = RequirementRule(
 CORRELATION_PROFILES = {
     "ctrx8188-dpll": CorrelationProfile(
         name="CTRX8188 DPLL phase noise",
-        strategy="mean_delta", reference_column="CV_PN_DIV8", candidate_column="ATE_PN_DIV8",
+        strategy="Mean_Deltas", reference_column="CV_PN_DIV8", candidate_column="ATE_PN_DIV8",
         group_by=("Test Number", "Voltage corner", "Frequency_GHz", "Temperature"),
         lower_limit_column="Low", upper_limit_column="High", unit_column="Unit",
         detail_key_columns=_DETAIL_KEYS,
@@ -123,7 +125,7 @@ CORRELATION_PROFILES = {
     ),
     "ctrx8188-txlo": CorrelationProfile(
         name="CTRX8188 TXLO power",
-        strategy="median_offset", reference_column="CV_LO_Power", candidate_column="ATE_LO_Power",
+        strategy="Median_Deltas", reference_column="CV_LO_Power", candidate_column="ATE_LO_Power",
         group_by=("Test Number", "Voltage corner", "Frequency_GHz", "Temperature", "LO IDAC"),
         lower_limit_column="Low", upper_limit_column="High", unit_column="Unit",
         detail_key_columns=_DETAIL_KEYS,
@@ -133,7 +135,7 @@ CORRELATION_PROFILES = {
     ),
     "ctrx8188-txpa": CorrelationProfile(
         name="CTRX8188 TXPA power",
-        strategy="median_offset", reference_column="CV_PA_Power", candidate_column="ATE_PA_Power",
+        strategy="Median_Deltas", reference_column="CV_PA_Power", candidate_column="ATE_PA_Power",
         group_by=("LUT value", "Voltage corner", "Frequency_GHz", "Temperature", "PA Channel"),
         lower_limit_column="Low", upper_limit_column="High", unit_column="Unit",
         detail_key_columns=_DETAIL_KEYS,

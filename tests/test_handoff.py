@@ -15,7 +15,7 @@ from cv_ate_correlation.handoff import (
     create_measurement_request,
     import_measurement_results,
 )
-from cv_ate_correlation.models import CorrelationProfile
+from cv_ate_correlation.models import CorrelationProfile, CovariateProfile
 
 
 PROFILE = CorrelationProfile(
@@ -145,3 +145,22 @@ def test_manifest_contains_internal_sheet(tmp_path: Path) -> None:
     request_path, manifest_path = tmp_path / "request.xlsx", tmp_path / "manifest.xlsx"
     create_measurement_request(_source(), PROFILE, request_path, manifest_path)
     assert MANIFEST_SHEET in pd.ExcelFile(manifest_path).sheet_names
+
+
+def test_embedded_kf_stays_in_manifest_and_is_not_sent_in_cv_request(tmp_path: Path) -> None:
+    profile = CorrelationProfile(
+        name="Kf campaign",
+        strategy="Physics-based",
+        reference_column="CV_Value",
+        candidate_column="ATE_Value",
+        group_by=("Parameter", "Temperature"),
+        covariate=CovariateProfile("Test Value", ("DUT", "Temperature"), "Kf", 52046),
+    )
+    source = _source().assign(Kf=[0.1, 0.1, 0.2])
+
+    request, manifest = create_measurement_request(
+        source, profile, tmp_path / "request-kf.xlsx", tmp_path / "manifest-kf.xlsx"
+    )
+
+    assert "Kf" not in request.columns
+    assert manifest["Kf"].tolist() == pytest.approx([0.1, 0.1, 0.2])

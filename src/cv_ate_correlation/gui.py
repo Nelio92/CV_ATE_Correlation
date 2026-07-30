@@ -22,7 +22,7 @@ if __package__ in {None, ""}:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cv_ate_correlation.correlation import attach_covariate, correlate_frame
+from cv_ate_correlation.correlation import attach_covariate_from_test_rows, correlate_frame
 from cv_ate_correlation.excel import write_dataframe_workbook
 from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
 from cv_ate_correlation.handoff import (
@@ -31,7 +31,11 @@ from cv_ate_correlation.handoff import (
     create_measurement_request,
     import_measurement_results,
 )
-from cv_ate_correlation.models import DEFAULT_COORDINATE_FALLBACK
+from cv_ate_correlation.models import (
+    DEFAULT_COORDINATE_FALLBACK,
+    normalize_correlation_strategy,
+    normalize_guard_band_kind,
+)
 from cv_ate_correlation.profile_store import (
     delete_custom_profile,
     load_custom_profile_specs,
@@ -103,14 +107,14 @@ GROUPING_METHODS = {
 }
 GROUPING_VALUE_TYPES = {"Text": "str", "Integer": "int", "Decimal": "float"}
 CORRELATION_STRATEGY_EXPLANATIONS = {
-    "mean_delta": "Corr_Factor = mean(Lab − ATE); corrected ATE = ATE + Corr_Factor",
-    "median_offset": "Corr_Factor = median(Lab − ATE); corrected ATE = ATE + Corr_Factor",
+    "Linear": "OLS fit: CV_pred = a × ATE + b; correlation factors are a and b",
+    "Mean_Deltas": "CV_pred = ATE + mean(CV − ATE)",
+    "Median_Deltas": "CV_pred = ATE + median(CV − ATE)",
+    "Physics-based": "CV_pred = ATE − (alpha × Kf + beta)",
 }
 GUARD_BAND_EXPLANATIONS = {
     "distribution_sigma": "limits = mean(corrected ATE) ± k × σ(corrected ATE)",
-    "shifted_upper_limit": (
-        "adjusted upper = original upper − f; worst-case upper = adjusted upper − max|Lab − corrected ATE|"
-    ),
+    "Max_residuals": "new LTL = REQ_MIN + |max residual|; new UTL = REQ_MAX − |max residual|",
 }
 
 
@@ -253,14 +257,33 @@ def test_set_definitions(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Load persisted test sets or migrate the former profile-wide policy fields."""
     saved = spec.get("test_sets")
     if isinstance(saved, list) and saved:
-        return [dict(item) for item in saved if isinstance(item, dict)]
-    return [{
+        definitions = [dict(item) for item in saved if isinstance(item, dict)]
+    else:
+        definitions = [{
         "name": "Tests 1",
         "tests": str(spec.get("tests", "")),
-        "strategy": str(spec.get("strategy", "median_offset")),
+        "strategy": str(spec.get("strategy", "Median_Deltas")),
         "guard_band_kind": str(spec.get("guard_band_kind", "distribution_sigma")),
         "sigma_multiplier": str(spec.get("sigma_multiplier", "6.0")),
-    }]
+        "requirement_min": str(spec.get("requirement_min", "")),
+        "requirement_max": str(spec.get("requirement_max", "")),
+        "pooled_columns": str(spec.get("pooled_columns", "")),
+        }]
+    for definition in definitions:
+        try:
+            definition["strategy"] = normalize_correlation_strategy(
+                str(definition.get("strategy", "Median_Deltas"))
+            )
+        except ValueError:
+            pass
+        try:
+            definition["guard_band_kind"] = normalize_guard_band_kind(
+                str(definition.get("guard_band_kind", "distribution_sigma")),
+                migrate_legacy_shifted=True,
+            )
+        except ValueError:
+            pass
+    return definitions
 
 
 def validate_test_set_definitions(definitions: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -276,10 +299,19 @@ def validate_test_set_definitions(definitions: list[Mapping[str, Any]]) -> list[
         names.add(name.casefold())
         tests = str(definition.get("tests", "")).strip()
         parse_test_selector(tests)
-        strategy = str(definition.get("strategy", ""))
+        try:
+            strategy = normalize_correlation_strategy(str(definition.get("strategy", "")))
+        except ValueError as error:
+            raise ValueError(f"Test set '{name}' has an invalid correlation strategy") from error
         if strategy not in CORRELATION_STRATEGY_EXPLANATIONS:
             raise ValueError(f"Test set '{name}' has an invalid correlation strategy")
-        guard_kind = str(definition.get("guard_band_kind", ""))
+        try:
+            guard_kind = normalize_guard_band_kind(
+                str(definition.get("guard_band_kind", "")),
+                migrate_legacy_shifted=True,
+            )
+        except ValueError as error:
+            raise ValueError(f"Test set '{name}' has an invalid guard-band policy") from error
         if guard_kind not in GUARD_BAND_EXPLANATIONS:
             raise ValueError(f"Test set '{name}' has an invalid guard-band policy")
         try:
@@ -288,12 +320,27 @@ def validate_test_set_definitions(definitions: list[Mapping[str, Any]]) -> list[
             raise ValueError(f"Test set '{name}' needs a numeric sigma multiplier") from error
         if not math.isfinite(sigma_multiplier) or sigma_multiplier <= 0:
             raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
+        requirement_min: float | str = ""
+        requirement_max: float | str = ""
+        if guard_kind == "Max_residuals":
+            try:
+                requirement_min = float(str(definition.get("requirement_min", "")).strip())
+                requirement_max = float(str(definition.get("requirement_max", "")).strip())
+            except ValueError as error:
+                raise ValueError(f"Test set '{name}' needs numeric REQ_MIN and REQ_MAX values") from error
+            if not math.isfinite(requirement_min) or not math.isfinite(requirement_max):
+                raise ValueError(f"Test set '{name}' REQ_MIN and REQ_MAX must be finite")
+            if requirement_min >= requirement_max:
+                raise ValueError(f"Test set '{name}' REQ_MIN must be smaller than REQ_MAX")
         validated.append({
             "name": name,
             "tests": tests,
             "strategy": strategy,
             "guard_band_kind": guard_kind,
             "sigma_multiplier": sigma_multiplier,
+            "requirement_min": requirement_min,
+            "requirement_max": requirement_max,
+            "pooled_columns": ", ".join(_split_group_columns(definition.get("pooled_columns", ""))),
         })
     return validated
 
@@ -715,8 +762,8 @@ class CorrelationDesktopApp:
         ttk.Label(
             outer,
             text=(
-                "Define the tests, grouping identification, correlation strategy, guard-band policy, and optional "
-                "covariate. Built-in CTRX8188 profiles remain read-only; custom profiles are available immediately "
+                "Define the tests, grouping identification, correlation strategy, guard-band policy, and automatic "
+                "Kf extraction. Built-in CTRX8188 profiles remain read-only; custom profiles are available immediately "
                 "in every workflow and in the CLI."
             ),
             style="Hint.TLabel",
@@ -746,7 +793,7 @@ class CorrelationDesktopApp:
         correlation = correlation_scroll.content
         editor.add(insertion_scroll, text="Insertions")
         editor.add(basics_scroll, text="Identity & Tests")
-        editor.add(correlation_scroll, text="Correlation Inputs & Covariate")
+        editor.add(correlation_scroll, text="Correlation Inputs & Kf")
         for page in (insertions_page, basics, correlation):
             page.columnconfigure(1, weight=1)
 
@@ -755,7 +802,7 @@ class CorrelationDesktopApp:
             "display_name": "",
             "tests": "",
             "group_by": "Test Number",
-            "strategy": "median_offset",
+            "strategy": "Median_Deltas",
             "reference_column": "CV Value",
             "candidate_column": "Test Value",
             "minimum_points": "5",
@@ -771,9 +818,11 @@ class CorrelationDesktopApp:
             "test_name_column": "Test Name",
             "guard_band_kind": "distribution_sigma",
             "sigma_multiplier": "6.0",
-            "covariate_value_column": "",
-            "covariate_merge_keys": "",
-            "covariate_output_name": "Covariate",
+            "physics_kf_enabled": "Enabled",
+            "covariate_value_column": "Test Value",
+            "covariate_merge_keys": "DUT Nr, Temperature, Insertion",
+            "covariate_output_name": "Kf",
+            "covariate_test_number": "52046",
         }
         variables = {key: tk.StringVar(value=value) for key, value in defaults.items()}
         self._profile_editor_vars = variables
@@ -981,9 +1030,12 @@ class CorrelationDesktopApp:
         selected_test_set = tk.StringVar()
         test_set_name = tk.StringVar()
         test_set_tests = tk.StringVar()
-        test_set_strategy = tk.StringVar(value="median_offset")
+        test_set_strategy = tk.StringVar(value="Median_Deltas")
         test_set_guard_band = tk.StringVar(value="distribution_sigma")
         test_set_sigma = tk.StringVar(value="6.0")
+        test_set_requirement_min = tk.StringVar()
+        test_set_requirement_max = tk.StringVar()
+        test_set_pooled_columns = tk.StringVar()
         strategy_equation = tk.StringVar()
         guard_band_equation = tk.StringVar()
         current_test_set = {"index": 0, "loading": False}
@@ -1060,12 +1112,49 @@ class CorrelationDesktopApp:
             wraplength=390,
         ).grid(row=5, column=2, sticky="w")
 
+        self._add_label(test_set_frame, 6, "REQ_MIN")
+        requirement_min_entry = ttk.Entry(test_set_frame, textvariable=test_set_requirement_min)
+        requirement_min_entry.grid(row=6, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            test_set_frame,
+            text="Required by Max_residuals; base lower requirement before adding max |residual|.",
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=6, column=2, sticky="w")
+
+        self._add_label(test_set_frame, 7, "REQ_MAX")
+        requirement_max_entry = ttk.Entry(test_set_frame, textvariable=test_set_requirement_max)
+        requirement_max_entry.grid(row=7, column=1, padx=(0, 8), pady=4, sticky="ew")
+        ttk.Label(
+            test_set_frame,
+            text="Required by Max_residuals; base upper requirement before subtracting max |residual|.",
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=7, column=2, sticky="w")
+
+        self._add_label(test_set_frame, 8, "Merge/pool parameters")
+        ttk.Entry(test_set_frame, textvariable=test_set_pooled_columns).grid(
+            row=8, column=1, padx=(0, 8), pady=4, sticky="ew"
+        )
+        ttk.Label(
+            test_set_frame,
+            text=(
+                "Optional comma-separated enabled grouping columns whose values share one factor and guard band in this "
+                "test set; for example: Test Number, Channel pools 8 channels into 88 samples for 11 DUTs."
+            ),
+            style="Hint.TLabel",
+            wraplength=390,
+        ).grid(row=8, column=2, sticky="w")
+
         def update_policy_explanations(*_args: object) -> None:
             strategy_equation.set(CORRELATION_STRATEGY_EXPLANATIONS.get(test_set_strategy.get(), ""))
             guard_band_equation.set(GUARD_BAND_EXPLANATIONS.get(test_set_guard_band.get(), ""))
             sigma_entry.configure(
                 state="normal" if test_set_guard_band.get() == "distribution_sigma" else "disabled"
             )
+            requirement_state = "normal" if test_set_guard_band.get() == "Max_residuals" else "disabled"
+            requirement_min_entry.configure(state=requirement_state)
+            requirement_max_entry.configure(state=requirement_state)
 
         def store_current_test_set() -> None:
             if current_test_set["loading"] or not configured_test_sets:
@@ -1076,11 +1165,15 @@ class CorrelationDesktopApp:
                 "strategy": test_set_strategy.get(),
                 "guard_band_kind": test_set_guard_band.get(),
                 "sigma_multiplier": test_set_sigma.get().strip(),
+                "requirement_min": test_set_requirement_min.get().strip(),
+                "requirement_max": test_set_requirement_max.get().strip(),
+                "pooled_columns": test_set_pooled_columns.get().strip(),
             })
 
         def test_set_selector_values() -> tuple[str, ...]:
             return tuple(
                 f"{item.get('name') or 'Unnamed'} · {item.get('strategy')} · {item.get('guard_band_kind')}"
+                + (f" · pool {item.get('pooled_columns')}" if str(item.get("pooled_columns", "")).strip() else "")
                 for item in configured_test_sets
             )
 
@@ -1091,9 +1184,12 @@ class CorrelationDesktopApp:
             test_set_combo.current(index)
             test_set_name.set(str(definition.get("name", "")))
             test_set_tests.set(str(definition.get("tests", "")))
-            test_set_strategy.set(str(definition.get("strategy", "median_offset")))
+            test_set_strategy.set(str(definition.get("strategy", "Median_Deltas")))
             test_set_guard_band.set(str(definition.get("guard_band_kind", "distribution_sigma")))
             test_set_sigma.set(str(definition.get("sigma_multiplier", "6.0")))
+            test_set_requirement_min.set(str(definition.get("requirement_min", "")))
+            test_set_requirement_max.set(str(definition.get("requirement_max", "")))
+            test_set_pooled_columns.set(str(definition.get("pooled_columns", "")))
             current_test_set["loading"] = False
             update_policy_explanations()
 
@@ -1107,9 +1203,12 @@ class CorrelationDesktopApp:
             configured_test_sets.append({
                 "name": f"Tests {len(configured_test_sets) + 1}",
                 "tests": "",
-                "strategy": "median_offset",
+                "strategy": "Median_Deltas",
                 "guard_band_kind": "distribution_sigma",
                 "sigma_multiplier": "6.0",
+                "requirement_min": "",
+                "requirement_max": "",
+                "pooled_columns": "",
             })
             load_test_set(len(configured_test_sets) - 1)
 
@@ -1378,23 +1477,37 @@ class CorrelationDesktopApp:
             "Input column holding descriptive test names; for example: Test Name.",
         )
         ttk.Separator(correlation).grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
-        add_entry(
-            correlation, 5, "Covariate value column", "covariate_value_column",
-            "Optional lookup value used by the fitted model; for example: Test Value containing Kf.",
+        self._add_combo(
+            correlation, 5, "Automatic Physics/Kf model", variables["physics_kf_enabled"],
+            ("Enabled", "Disabled"),
         )
         add_entry(
-            correlation, 6, "Covariate merge keys", "covariate_merge_keys",
-            "Columns joining lookup and correlation rows; for example: DUT Nr, Temperature.",
+            correlation, 6, "Kf raw value column", "covariate_value_column",
+            "Numeric result column on the raw Kf test row; normally Test Value.",
         )
         add_entry(
-            correlation, 7, "Covariate output name", "covariate_output_name",
-            "Name assigned to the merged value; for example: Kf or Process Monitor.",
+            correlation, 7, "Kf merge keys", "covariate_merge_keys",
+            "Raw-data columns identifying one Kf; for example: DUT Nr, Temperature, Insertion.",
+        )
+        add_entry(
+            correlation, 8, "Kf output name", "covariate_output_name",
+            "Internal name assigned after the join; use Kf for the Physics-based model.",
+        )
+        add_entry(
+            correlation, 9, "Kf test number", "covariate_test_number",
+            "Raw-data test number containing Kf. The default is 52046.",
         )
         ttk.Label(
             correlation,
-            text="Leave both covariate value and merge keys empty for an offset-only profile.",
+            text=(
+                "Step 2 extracts this Kf test directly from every assigned raw file, joins it to the selected correlation "
+                "tests by DUT, temperature, and insertion, stores it under the output name, and removes the Kf test rows "
+                "before creating the CV request. Each key combination must map to one numeric Kf. Disable automatic "
+                "Physics/Kf only for profiles where this model is not applicable."
+            ),
             style="Hint.TLabel",
-        ).grid(row=8, column=1, columnspan=2, sticky="w")
+            wraplength=760,
+        ).grid(row=10, column=1, columnspan=2, sticky="w")
 
         actions = ttk.Frame(outer)
         actions.grid(row=4, column=0, pady=(12, 0), sticky="e")
@@ -1465,6 +1578,13 @@ class CorrelationDesktopApp:
                 return
             for key, default in defaults.items():
                 variables[key].set(str(spec.get(key, default)))
+            if variables["physics_kf_enabled"].get().strip().casefold() not in {"disabled", "false", "no", "off", "0"}:
+                if not variables["covariate_value_column"].get().strip():
+                    variables["covariate_value_column"].set("Test Value")
+                if not variables["covariate_merge_keys"].get().strip():
+                    variables["covariate_merge_keys"].set("DUT Nr, Temperature, Insertion")
+                if variables["covariate_output_name"].get().strip().casefold() in {"", "covariate"}:
+                    variables["covariate_output_name"].set("Kf")
             apply_insertions(spec)
             apply_coordinate_fallback(spec)
             apply_test_sets(spec)
@@ -1489,6 +1609,8 @@ class CorrelationDesktopApp:
                 spec["strategy"] = primary_test_set["strategy"]
                 spec["guard_band_kind"] = primary_test_set["guard_band_kind"]
                 spec["sigma_multiplier"] = primary_test_set["sigma_multiplier"]
+                spec["requirement_min"] = primary_test_set["requirement_min"]
+                spec["requirement_max"] = primary_test_set["requirement_max"]
                 store_current_insertion()
                 spec["insertions"] = validate_insertion_definitions(configured_insertions)
                 store_current_condition()
@@ -1599,6 +1721,9 @@ class CorrelationDesktopApp:
                     Path(values["chip manifest"]),
                     get_extraction_profile(values["profile"]),
                 )
+                correlation_profile = CORRELATION_PROFILES.get(values["profile"])
+                if correlation_profile is not None and correlation_profile.covariate is not None:
+                    frame = attach_covariate_from_test_rows(frame, correlation_profile)
                 destination = Path(values["output workbook"])
                 write_dataframe_workbook(destination, {"Extracted_Data": frame})
                 return f"Extracted {len(frame):,} rows to {destination}."
@@ -1776,14 +1901,12 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "5 · Correlate",
             "Generate factors, guard-bands, report, and plots",
-            "INPUT: the aligned correlation workbook and, when required, a covariate workbook. OUTPUT: a formatted Excel "
-            "report and optional plot folder.",
+            "INPUT: the aligned correlation workbook. Kf is extracted from raw data in Step 2 and retained internally "
+            "through Steps 3–4. OUTPUT: a formatted Excel report and optional plot folder.",
         )
         profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
         source = tk.StringVar()
         sheet = tk.StringVar()
-        covariate_source = tk.StringVar()
-        covariate_sheet = tk.StringVar()
         report = tk.StringVar()
         plots = tk.StringVar()
         covariate_hint = tk.StringVar()
@@ -1797,21 +1920,13 @@ class CorrelationDesktopApp:
             lambda: self._choose_open(source, sheet, sheet_combo),
             direction="input",
         )
-        covariate_combo = self._add_combo(form, 4, "Covariate sheet", covariate_sheet, ())
-        covariate_entry, covariate_button = self._add_path(
-            form,
-            3,
-            "Covariate workbook",
-            covariate_source,
-            lambda: self._choose_open(covariate_source, covariate_sheet, covariate_combo),
-            direction="input",
-        )
-        ttk.Label(form, textvariable=covariate_hint, style="Hint.TLabel").grid(
-            row=4, column=2, pady=7, sticky="w"
+        self._add_label(form, 3, "Automatic Kf source")
+        ttk.Label(form, textvariable=covariate_hint, style="Hint.TLabel", wraplength=720).grid(
+            row=3, column=1, columnspan=2, pady=7, sticky="w"
         )
         self._add_path(
             form,
-            5,
+            4,
             "Excel report",
             report,
             lambda: self._choose_save(report, "Save correlation report"),
@@ -1819,7 +1934,7 @@ class CorrelationDesktopApp:
         )
         self._add_path(
             form,
-            6,
+            5,
             "Plots folder (optional)",
             plots,
             lambda: self._choose_folder(plots, "Select plot output folder"),
@@ -1828,12 +1943,15 @@ class CorrelationDesktopApp:
         )
 
         def update_covariate_state(*_args: object) -> None:
-            required = get_correlation_profile(profile.get()).covariate is not None
-            state = ["!disabled"] if required else ["disabled"]
-            covariate_entry.state(state)
-            covariate_combo.state(state)
-            covariate_button.state(state)
-            covariate_hint.set("Required" if required else "Not used")
+            config = get_correlation_profile(profile.get()).covariate
+            covariate_hint.set(
+                (
+                    f"Embedded by Step 2 from raw test {config.test_number}: read '{config.value_column}', "
+                    f"join by {', '.join(config.merge_keys)}, store as '{config.output_name}'."
+                )
+                if config is not None
+                else "Automatic Physics/Kf is disabled for this profile"
+            )
 
         def run() -> None:
             values = {
@@ -1841,8 +1959,6 @@ class CorrelationDesktopApp:
                 "input workbook": source.get(),
                 "input sheet": sheet.get(),
                 "report workbook": report.get(),
-                "covariate workbook": covariate_source.get(),
-                "covariate sheet": covariate_sheet.get(),
                 "plots folder": plots.get(),
             }
             if not self._validate_required(**{
@@ -1851,21 +1967,15 @@ class CorrelationDesktopApp:
             }):
                 return
             selected = get_correlation_profile(values["profile"])
-            if selected.covariate:
-                if not self._validate_required(**{
-                    "covariate workbook": values["covariate workbook"],
-                    "covariate sheet": values["covariate sheet"],
-                }):
-                    return
 
             def action() -> str:
                 frame = pd.read_excel(Path(values["input workbook"]), sheet_name=values["input sheet"])
-                if selected.covariate:
-                    lookup = pd.read_excel(
-                        Path(values["covariate workbook"]),
-                        sheet_name=values["covariate sheet"],
+                if selected.covariate and selected.covariate.output_name not in frame.columns:
+                    raise ValueError(
+                        f"Aligned input is missing embedded Kf column '{selected.covariate.output_name}'. "
+                        f"Rerun Step 2 with this profile so raw test {selected.covariate.test_number} is extracted, "
+                        "then repeat Steps 3 and 4."
                     )
-                    frame = attach_covariate(frame, lookup, selected)
                 result = correlate_frame(frame, selected)
                 destination = Path(values["report workbook"])
                 write_excel_report(result, selected, destination)
@@ -1880,7 +1990,7 @@ class CorrelationDesktopApp:
             self._start_job(run_button, "Calculating correlations and generating outputs…", action)
 
         run_button = ttk.Button(form, text="Generate report", command=run)
-        run_button.grid(row=7, column=1, pady=(18, 0), sticky="e")
+        run_button.grid(row=6, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_covariate_state)
         update_covariate_state()
 

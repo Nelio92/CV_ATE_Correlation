@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -13,6 +13,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 ACCENT_1_BLUE = "4472C4"
 HEADER_FONT_COLOR = "FFFFFF"
+DATA_INTEREST_FILL = "E2F0D9"
+DATA_INTEREST_FONT_COLOR = "375623"
 DEFAULT_MIN_WIDTH = 10
 DEFAULT_MAX_WIDTH = 60
 
@@ -55,12 +57,36 @@ def format_worksheet(
         worksheet.column_dimensions[get_column_letter(column_index)].width = width
 
 
-def format_workbook(path: str | Path) -> None:
+def highlight_data_columns(worksheet: Worksheet, column_names: Iterable[str]) -> None:
+    """Highlight populated report cells whose headers identify primary outputs."""
+    requested = set(column_names)
+    if not requested or worksheet.max_row < 2:
+        return
+    fill = PatternFill(fill_type="solid", fgColor=DATA_INTEREST_FILL)
+    font = Font(color=DATA_INTEREST_FONT_COLOR, bold=True)
+    for column_index, header in enumerate(worksheet[1], start=1):
+        if str(header.value or "") not in requested:
+            continue
+        for row_index in range(2, worksheet.max_row + 1):
+            cell = worksheet.cell(row=row_index, column=column_index)
+            if cell.value is None:
+                continue
+            cell.fill = fill
+            cell.font = font
+
+
+def format_workbook(
+    path: str | Path,
+    *,
+    highlighted_columns: Mapping[str, Iterable[str]] | None = None,
+) -> None:
     """Format every non-empty worksheet in an existing Excel workbook."""
     destination = Path(path)
     workbook = load_workbook(destination)
     for worksheet in workbook.worksheets:
         format_worksheet(worksheet)
+        if highlighted_columns:
+            highlight_data_columns(worksheet, highlighted_columns.get(worksheet.title, ()))
     workbook.save(destination)
 
 

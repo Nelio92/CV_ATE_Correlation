@@ -122,19 +122,29 @@ def test_be_coordinate_fallback_is_visible_profile_state_and_configurable() -> N
 
 
 def test_test_sets_expose_equations_and_support_independent_policies() -> None:
-    assert "mean(Lab − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["mean_delta"]
-    assert "median(Lab − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["median_offset"]
+    assert tuple(CORRELATION_STRATEGY_EXPLANATIONS) == (
+        "Linear", "Mean_Deltas", "Median_Deltas", "Physics-based",
+    )
+    assert "CV_pred = a × ATE + b" in CORRELATION_STRATEGY_EXPLANATIONS["Linear"]
+    assert "correlation factors are a and b" in CORRELATION_STRATEGY_EXPLANATIONS["Linear"]
+    assert "mean(CV − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["Mean_Deltas"]
+    assert "median(CV − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["Median_Deltas"]
+    assert "alpha × Kf + beta" in CORRELATION_STRATEGY_EXPLANATIONS["Physics-based"]
     assert "± k × σ" in GUARD_BAND_EXPLANATIONS["distribution_sigma"]
-    assert "max|Lab − corrected ATE|" in GUARD_BAND_EXPLANATIONS["shifted_upper_limit"]
+    assert tuple(GUARD_BAND_EXPLANATIONS) == ("distribution_sigma", "Max_residuals")
+    assert "REQ_MIN + |max residual|" in GUARD_BAND_EXPLANATIONS["Max_residuals"]
 
     migrated = load_test_set_definitions({
         "tests": "101",
         "strategy": "mean_delta",
         "guard_band_kind": "shifted_upper_limit",
         "sigma_multiplier": "6",
+        "requirement_min": "8",
+        "requirement_max": "16",
     })
     assert migrated[0]["tests"] == "101"
-    assert migrated[0]["strategy"] == "mean_delta"
+    assert migrated[0]["strategy"] == "Mean_Deltas"
+    assert migrated[0]["guard_band_kind"] == "Max_residuals"
 
     validated = validate_test_set_definitions([
         {
@@ -143,6 +153,8 @@ def test_test_sets_expose_equations_and_support_independent_policies() -> None:
             "strategy": "mean_delta",
             "guard_band_kind": "shifted_upper_limit",
             "sigma_multiplier": "6",
+            "requirement_min": "8",
+            "requirement_max": "16",
         },
         {
             "name": "Power",
@@ -150,10 +162,17 @@ def test_test_sets_expose_equations_and_support_independent_policies() -> None:
             "strategy": "median_offset",
             "guard_band_kind": "distribution_sigma",
             "sigma_multiplier": "4",
+            "pooled_columns": "Test Number, Channel",
         },
     ])
     assert [item["name"] for item in validated] == ["Noise", "Power"]
+    assert validated[0]["strategy"] == "Mean_Deltas"
+    assert validated[0]["guard_band_kind"] == "Max_residuals"
+    assert validated[0]["requirement_min"] == 8.0
+    assert validated[0]["requirement_max"] == 16.0
+    assert validated[1]["strategy"] == "Median_Deltas"
     assert validated[1]["sigma_multiplier"] == 4.0
+    assert validated[1]["pooled_columns"] == "Test Number, Channel"
 
 
 def test_raw_file_cannot_be_assigned_to_two_insertions(tmp_path: Path) -> None:

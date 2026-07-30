@@ -107,6 +107,8 @@ def create_measurement_request(
         raise ValueError("Cannot create a measurement request from an empty input")
 
     excluded = {candidate_value_column, profile.reference_column, profile.candidate_column, "Low", "High"}
+    if profile.covariate is not None:
+        excluded.add(profile.covariate.output_name)
     descriptor_columns = [column for column in frame.columns if column not in excluded]
     if not descriptor_columns:
         raise ValueError("No measurement descriptors remain after removing value columns")

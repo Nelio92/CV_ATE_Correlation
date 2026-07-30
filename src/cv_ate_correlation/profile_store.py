@@ -19,6 +19,8 @@ from .models import (
     GuardBandProfile,
     InsertionProfile,
     MatchCase,
+    normalize_correlation_strategy,
+    normalize_guard_band_kind,
     RegexField,
     TestPolicy,
     TestSelector,
@@ -160,6 +162,17 @@ def _require_string(spec: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _enabled(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().casefold()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise ValueError(f"Profile field '{field_name}' must be Enabled or Disabled")
+
+
 def _parse_test_policies(spec: Mapping[str, Any]) -> tuple[TestSelector, tuple[TestPolicy, ...]]:
     """Build per-test policies and one union selector used by extraction."""
     raw_sets = spec.get("test_sets")
@@ -167,9 +180,11 @@ def _parse_test_policies(spec: Mapping[str, Any]) -> tuple[TestSelector, tuple[T
         raw_sets = [{
             "name": "Tests 1",
             "tests": _require_string(spec, "tests"),
-            "strategy": spec.get("strategy", "median_offset"),
+            "strategy": spec.get("strategy", "Median_Deltas"),
             "guard_band_kind": spec.get("guard_band_kind", "distribution_sigma"),
             "sigma_multiplier": spec.get("sigma_multiplier", 6.0),
+            "requirement_min": spec.get("requirement_min", ""),
+            "requirement_max": spec.get("requirement_max", ""),
         }]
     if not isinstance(raw_sets, list) or not raw_sets:
         raise ValueError("Profile needs at least one test set")
@@ -184,26 +199,46 @@ def _parse_test_policies(spec: Mapping[str, Any]) -> tuple[TestSelector, tuple[T
             raise ValueError(f"Test set name '{name}' is duplicated")
         names.add(name.casefold())
         selector = parse_test_selector(str(raw_set.get("tests", "")))
-        strategy = str(raw_set.get("strategy", "median_offset"))
-        if strategy not in {"mean_delta", "median_offset"}:
-            raise ValueError(f"Test set '{name}' has an invalid correlation strategy")
-        guard_kind = str(raw_set.get("guard_band_kind", "distribution_sigma"))
-        if guard_kind not in {"distribution_sigma", "shifted_upper_limit"}:
-            raise ValueError(f"Test set '{name}' has an invalid guard-band policy")
+        try:
+            strategy = normalize_correlation_strategy(str(raw_set.get("strategy", "Median_Deltas")))
+        except ValueError as error:
+            raise ValueError(f"Test set '{name}' has an invalid correlation strategy") from error
+        try:
+            guard_kind = normalize_guard_band_kind(
+                str(raw_set.get("guard_band_kind", "distribution_sigma")),
+                migrate_legacy_shifted=True,
+            )
+        except ValueError as error:
+            raise ValueError(f"Test set '{name}' has an invalid guard-band policy") from error
         try:
             sigma_multiplier = float(raw_set.get("sigma_multiplier", 6.0))
         except (TypeError, ValueError) as error:
             raise ValueError(f"Test set '{name}' needs a numeric sigma multiplier") from error
         if not math.isfinite(sigma_multiplier) or sigma_multiplier <= 0:
             raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
+        requirement_min: float | None = None
+        requirement_max: float | None = None
+        if guard_kind == "Max_residuals":
+            try:
+                requirement_min = float(raw_set.get("requirement_min", ""))
+                requirement_max = float(raw_set.get("requirement_max", ""))
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Test set '{name}' needs numeric REQ_MIN and REQ_MAX values") from error
+            if not math.isfinite(requirement_min) or not math.isfinite(requirement_max):
+                raise ValueError(f"Test set '{name}' REQ_MIN and REQ_MAX must be finite")
+            if requirement_min >= requirement_max:
+                raise ValueError(f"Test set '{name}' REQ_MIN must be smaller than REQ_MAX")
         policies.append(TestPolicy(
             name=name,
             selector=selector,
-            strategy=strategy,  # type: ignore[arg-type]
+            strategy=strategy,
             guard_band=GuardBandProfile(
-                kind=guard_kind,  # type: ignore[arg-type]
+                kind=guard_kind,
                 sigma_multiplier=sigma_multiplier,
+                requirement_min=requirement_min,
+                requirement_max=requirement_max,
             ),
+            pooled_columns=_split_csv(str(raw_set.get("pooled_columns", ""))),
         ))
 
     selector = TestSelector(
@@ -295,6 +330,66 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
         manual_groups = tuple(column for column in group_by if column not in {"Insertion", "Temperature"})
         group_by = (*manual_groups, "Insertion", "Temperature")
 
+    for policy in test_policies:
+        unknown_pooled = sorted(set(policy.pooled_columns) - set(group_by))
+        if unknown_pooled:
+            raise ValueError(
+                f"Test set '{policy.name}' pools columns that are not enabled grouping conditions: {unknown_pooled}"
+            )
+    pooled_columns = _split_csv(str(spec.get("pooled_columns", "")))
+    unknown_profile_pooled = sorted(set(pooled_columns) - set(group_by))
+    if unknown_profile_pooled:
+        raise ValueError(f"Profile pools columns that are not enabled grouping conditions: {unknown_profile_pooled}")
+
+    covariate: CovariateProfile | None = None
+    physics_kf_enabled = _enabled(
+        spec.get("physics_kf_enabled", True),
+        field_name="physics_kf_enabled",
+    )
+    covariate_value = str(spec.get("covariate_value_column", "")).strip()
+    covariate_keys = _split_csv(str(spec.get("covariate_merge_keys", "")))
+    if bool(covariate_value) != bool(covariate_keys):
+        raise ValueError("Kf value column and merge keys must either both be set or both be empty")
+    if physics_kf_enabled:
+        automatic_kf = not covariate_value
+        if automatic_kf:
+            covariate_value = "Test Value"
+            insertion_key = "Insertion" if insertion_profiles else (
+                str(spec.get("insertion_field", "Insertion Type")).strip() or "Insertion Type"
+            )
+            covariate_keys = ("DUT Nr", "Temperature", insertion_key)
+        try:
+            covariate_test_number = int(str(spec.get("covariate_test_number", "52046")).strip())
+        except ValueError as error:
+            raise ValueError("Kf test number must be an integer") from error
+        if covariate_test_number <= 0:
+            raise ValueError("Kf test number must be positive")
+        if extraction_selector.matches(covariate_test_number, ""):
+            raise ValueError(
+                f"Kf test number {covariate_test_number} cannot also be selected as a correlation test"
+            )
+        covariate = CovariateProfile(
+            covariate_value,
+            covariate_keys,
+            (
+                "Kf"
+                if automatic_kf
+                else str(spec.get("covariate_output_name", "Kf")).strip() or "Kf"
+            ),
+            covariate_test_number,
+        )
+        extraction_selector = TestSelector(
+            exact=tuple(dict.fromkeys((*extraction_selector.exact, covariate_test_number))),
+            ranges=extraction_selector.ranges,
+            name_contains=extraction_selector.name_contains,
+        )
+    physics_sets = [policy.name for policy in test_policies if normalize_correlation_strategy(policy.strategy) == "Physics-based"]
+    if physics_sets and covariate is None:
+        raise ValueError(
+            "Physics-based correlation requires automatic Kf extraction to be enabled "
+            f"for test set(s): {', '.join(physics_sets)}"
+        )
+
     extraction = ExtractionProfile(
         name=display_name,
         selector=extraction_selector,
@@ -309,18 +404,6 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
         ),
         insertions=tuple(insertion_profiles),
     )
-
-    covariate: CovariateProfile | None = None
-    covariate_value = str(spec.get("covariate_value_column", "")).strip()
-    covariate_keys = _split_csv(str(spec.get("covariate_merge_keys", "")))
-    if covariate_value or covariate_keys:
-        if not covariate_value or not covariate_keys:
-            raise ValueError("Covariate value column and merge keys must either both be set or both be empty")
-        covariate = CovariateProfile(
-            covariate_value,
-            covariate_keys,
-            str(spec.get("covariate_output_name", "Covariate")).strip() or "Covariate",
-        )
 
     def optional_column(key: str) -> str | None:
         value = str(spec.get(key, "")).strip()
@@ -341,6 +424,7 @@ def profile_spec_to_models(profile_id: str, spec: Mapping[str, Any]) -> tuple[Ex
         guard_band=primary_policy.guard_band,
         covariate=covariate,
         test_policies=test_policies,
+        pooled_columns=pooled_columns,
     )
     return extraction, correlation
 

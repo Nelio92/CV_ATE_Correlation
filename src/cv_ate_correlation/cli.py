@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import profiles_8188 as profile_registry
-from .correlation import attach_covariate, correlate_frame
+from .correlation import attach_covariate, attach_covariate_from_test_rows, correlate_frame
 from .excel import write_dataframe_workbook
 from .extraction import LegacyWideTeCsvAdapter
 from .handoff import import_measurement_results, create_measurement_request
@@ -43,8 +43,11 @@ def _build_parser() -> argparse.ArgumentParser:
     correlate.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
     correlate.add_argument("--input", required=True, type=Path)
     correlate.add_argument("--sheet", required=True)
-    correlate.add_argument("--covariate-input", type=Path)
-    correlate.add_argument("--covariate-sheet")
+    correlate.add_argument(
+        "--covariate-input", type=Path,
+        help="Legacy fallback lookup workbook; current extractions embed Kf automatically",
+    )
+    correlate.add_argument("--covariate-sheet", help="Legacy fallback lookup sheet")
     correlate.add_argument("--output", required=True, type=Path)
     correlate.add_argument("--plots", type=Path)
 
@@ -87,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         result = LegacyWideTeCsvAdapter().extract(
             args.input_folder, args.chip_manifest, get_extraction_profile(args.profile)
         )
+        correlation_profile = CORRELATION_PROFILES.get(args.profile)
+        if correlation_profile is not None and correlation_profile.covariate is not None:
+            result = attach_covariate_from_test_rows(result, correlation_profile)
         write_dataframe_workbook(args.output, {"Extracted_Data": result})
         print(f"Wrote {len(result)} extracted rows to {args.output}")
         return 0
@@ -111,11 +117,19 @@ def main(argv: list[str] | None = None) -> int:
 
     profile = get_correlation_profile(args.profile)
     frame = pd.read_excel(args.input, sheet_name=args.sheet)
-    if profile.covariate:
-        if not args.covariate_input or not args.covariate_sheet:
-            raise SystemExit("This profile requires --covariate-input and --covariate-sheet")
-        lookup = pd.read_excel(args.covariate_input, sheet_name=args.covariate_sheet)
-        frame = attach_covariate(frame, lookup, profile)
+    if profile.covariate and profile.covariate.output_name not in frame.columns:
+        if args.covariate_input and args.covariate_sheet:
+            lookup = pd.read_excel(args.covariate_input, sheet_name=args.covariate_sheet)
+            frame = attach_covariate(frame, lookup, profile)
+        elif "Test Number" in frame.columns and pd.to_numeric(
+            frame["Test Number"], errors="coerce"
+        ).eq(profile.covariate.test_number).any():
+            frame = attach_covariate_from_test_rows(frame, profile)
+        else:
+            raise SystemExit(
+                f"Input is missing embedded covariate column '{profile.covariate.output_name}'. "
+                f"Rerun raw extraction with this profile so Kf test {profile.covariate.test_number} is attached."
+            )
     result = correlate_frame(frame, profile)
     write_excel_report(result, profile, args.output)
     plot_count = write_plots(result, profile, args.plots) if args.plots else 0

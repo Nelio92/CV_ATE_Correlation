@@ -60,6 +60,10 @@ cv-ate-correlation extract `
     --output Data/TE_Data_Extraction/ATE_Extracted_LO_Power_Data_New.xlsx
 ```
 
+For a profile with a Kf covariate, this same extraction also reads the configured Kf test number (default `52046`), joins
+its `Test Value` to the selected correlation rows, and writes the result as the configured output column, normally `Kf`.
+The standalone Kf test rows are removed before the extracted workbook is created.
+
 ### Generate and Re-import the CV Handoff
 
 Create an editable measurement request and a separate TE-only manifest:
@@ -106,15 +110,13 @@ cv-ate-correlation correlate `
     --plots Data/Outputs/DPLL_Plots_New
 ```
 
-Kf-assisted profiles additionally require an explicit lookup workbook and sheet:
+Kf-assisted profiles use the Kf column embedded during raw extraction; no separate lookup workbook is required:
 
 ```powershell
 cv-ate-correlation correlate `
     --profile ctrx8188-txpa `
-    --input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
-    --sheet FE_Filtered `
-    --covariate-input Data/TE_Data_Extraction/ATE_Extracted_PA_Power_Data_DoE.xlsx `
-    --covariate-sheet KF_FE `
+    --input Data/TXPA_Correlation_Input.xlsx `
+    --sheet Correlation_Input `
     --output Data/Outputs/TXPA_Correlation_New.xlsx `
     --plots Data/Outputs/TXPA_Plots_New
 ```
@@ -125,6 +127,12 @@ Each report contains:
 - `Guard_Bands`
 - `Correlation_Summary`
 - `Correlated_Data`
+
+`Correlation_Factors` is intentionally focused on the selected strategy for each test set: offset strategies report only
+their single correlation factor, while Linear and Physics-based strategies report only factors A/B. The factor cells use a
+light-green bold highlight. `Guard_Bands` likewise reports only the selected policy's method and newly calculated limits;
+its method and populated new-limit cells use the same highlight. Full all-model diagnostics and original inputs remain
+available in `Correlation_Summary` and `Correlated_Data`.
 
 ### Desktop GUI
 
@@ -141,7 +149,7 @@ The GUI and CLI use the same engine and persistent profile registry. The desktop
     raw-data folder; custom profiles use the files assigned to their insertions.
 3. `Create CV Request` — generate the editable CV workbook and separate internal ATE manifest.
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
-5. `Correlate` — generate the Excel report and optional PNG plots, including explicit covariate selection.
+5. `Correlate` — generate the Excel report and optional PNG plots using the Kf retained in the aligned input.
 
 Workflow file fields are visually classified to prevent direction mistakes:
 
@@ -158,14 +166,16 @@ The profile editor is subsystem-neutral. A user can define:
     or more corresponding raw-data files selected with `Browse…`
 - one or more named test sets, each containing exact test numbers, inclusive ranges, or test-name fragments
 - an independent correlation strategy and guard-band policy for every test set
+- optional **Merge/pool parameters** for every test set, accepting any enabled grouping columns
 - independently selectable grouping conditions for `DUT Nr`, `Test Number`, `Frequency`, `Supply Corner`, `Channel`,
     and `Digital Control`
 - filename- or test-name-based identification configured inside each grouping condition
 - additional user-defined grouping conditions created with the `Add…` button
 - Lab/reference and ATE/candidate columns and minimum points per group
 - limit, unit, and detail-key columns
-- distribution-sigma or shifted-upper-limit guard-band behavior
-- optional covariate value, merge keys, and output name
+- distribution-sigma or `Max_residuals` guard-band behavior, with per-test-set `REQ_MIN` and `REQ_MAX` inputs
+- automatic Physics/Kf extraction, with editable raw value column, merge keys, output name, and Kf test number
+    (default `52046`)
 
 Each grouping condition has an editable input-column name. The defaults use common ATE names such as `Frequency_GHz` and
 `Voltage corner`; alternatives such as `PA Channel`, `LUT value`, or a project-specific column can be entered directly. Its
@@ -191,14 +201,60 @@ The compact test-selection field in each test set accepts entries such as `101, 
 create another set when some tests require different calculations. Every set shows the underlying equations beside its
 selectors:
 
-- `mean_delta`: $f = \operatorname{mean}(Lab-ATE)$ and $ATE_{corrected}=ATE+f$
-- `median_offset`: $f = \operatorname{median}(Lab-ATE)$ and $ATE_{corrected}=ATE+f$
+- `Linear`: OLS fit $CV_{pred}=a\,ATE+b$; the correlation factors are slope $a$ and intercept $b$
+- `Mean_Deltas`: $CV_{pred}=ATE+\operatorname{mean}(CV-ATE)$
+- `Median_Deltas`: $CV_{pred}=ATE+\operatorname{median}(CV-ATE)$
+- `Physics-based`: $CV_{pred}=ATE-(\alpha K_f+\beta)$, fitted from $ATE-CV=\alpha K_f+\beta$
 - `distribution_sigma`: $limits=\operatorname{mean}(ATE_{corrected})\pm k\sigma(ATE_{corrected})$
-- `shifted_upper_limit`: $upper_{adjusted}=upper_{original}-f$ and
-    $upper_{worst}=upper_{adjusted}-\max|Lab-ATE_{corrected}|$
+- `Max_residuals`: $LTL_{new}=REQ_{MIN}+|r|_{max}$ and $UTL_{new}=REQ_{MAX}-|r|_{max}$
+
+All four model predictions and residuals are calculated for comparison. `Mean_Deltas` and `Median_Deltas` are intentionally
+offset-only models with fixed slope 1; unlike OLS, they do not rotate to follow the point cloud. A low or negative R² therefore
+means that an offset-only model is unsuitable for that group, not that its mean or median factor was calculated incorrectly.
+Physics-based results are shown when the automatically extracted Kf data has enough numeric variation; selecting
+Physics-based as the primary strategy requires complete Kf coverage.
+
+### Automatic Kf input for the Physics-based model
+
+Automatic Physics/Kf is enabled by default for custom profiles. Step 2 identifies and joins Kf directly from the assigned
+raw data without a separate workbook or manually supplied covariate. Its advanced profile fields are:
+
+1. **Kf raw value column** is the numeric result on the raw Kf row and defaults to `Test Value`.
+2. **Kf merge keys** identify which Kf belongs to each correlation row and default to
+    `DUT Nr, Temperature, Insertion` for custom insertion profiles.
+3. **Kf output name** is the attached internal column name and defaults to `Kf`.
+4. **Kf test number** identifies the raw Kf test and defaults to `52046`.
+5. Save the profile and run Step 2. CorreLaTE adds the Kf test to the raw extraction selector automatically, joins its value,
+   verifies complete coverage, and removes the Kf rows. The `Kf` column is retained in the internal manifest and aligned
+   correlation input, but omitted from the workbook sent to Lab/CV.
+
+Each merge-key combination must resolve to exactly one numeric Kf. Repeated identical rows are accepted, but conflicting Kf
+values for the same keys are rejected. Missing matches also stop extraction with the unmatched row count. For each correlation group, CorreLaTE fits
+$ATE-CV=\alpha K_f+\beta$ and calculates $CV_{pred}=ATE-(\alpha K_f+\beta)$. Kf is therefore an explanatory input to the
+physics model, not the CV/reference measurement itself.
+
+When eight test numbers are pooled across 11 DUTs and the merge keys identify DUT plus measurement conditions, each DUT's
+Kf is joined to all eight matching test rows. The Physics-based fit therefore uses the same 88-row pooled population and
+produces one shared $\alpha$, $\beta$, and guard band for that test set.
 
 Correlation workbooks include the applied test-set name, strategy, and guard-band policy for traceability. A row must match
 exactly one test set; CorreLaTE rejects unmatched or overlapping definitions rather than silently choosing a policy.
+
+**Merge/pool parameters** removes selected dimensions from the factor/guard-band grouping only for that test set. The
+original dimensions remain on every row in `Correlated_Data`. For example, pooling `Test Number, Channel` combines eight
+TXPA channel tests measured on 11 DUTs into one 88-sample population for each frequency, supply corner, digital control,
+insertion, and temperature. All eight test numbers receive the same correlation factor and guard band. Summary, factor,
+and guard-band sheets show `MERGED`, the pooled parameter names, every merged value, and value counts; plot titles show the
+merged values and `Samples=88`. Different test sets can pool different parameters without combining rows across sets.
+
+Each correlation group produces two 12×9 PNG files: `__series.png` contains raw and all correlated series with the new
+policy limits, while
+`__models.png` contains the CV-vs-ATE model comparison and all model residuals. The selected plot folder contains sibling
+`<folder-name>_FE` and `<folder-name>_BE` subfolders, and plots are dispatched using insertion type/name. Plot annotations
+include sample counts, mean/median/max deltas, residual deviations, R² values, physics α/β, invalid limit-window warnings,
+and DoE segment labels when available. The correlated-series subplot omits original test-limit and base-requirement lines
+and legend entries; its vertical range is calculated from all model predictions and the applicable new limits so the model
+traces remain visible.
 
 Every enabled grouping condition defines a separate factor/guard-band population. Device identifiers such as `DUT Nr`
 normally belong in **Detail key columns**, not **Grouping conditions**, unless a separate correlation factor per DUT is
@@ -210,6 +266,8 @@ minimum sample requirement.
 Every Excel workbook generated by the package—extracted data, CV request, internal manifest, aligned input, and correlation
 report—uses consistent presentation on every sheet: autofitted column widths, blue Accent 1 headers with bold white text,
 frozen header rows, and enabled header filters. Widths are capped to keep exceptionally long values manageable.
+In all four correlation-report sheets, `Test Name` is placed immediately after `Test Number` whenever a test-number column is
+present.
 
 Regular expressions are not required for normal profile creation. The identification-method dropdown provides:
 
@@ -251,13 +309,14 @@ python -m pytest -q
 
 The current suite validates:
 
-- DPLL mean-delta factors, shifted limits, and worst-case guard-bands
-- TXLO/TXPA median-offset factors, residuals, corrected limits, and special requirement policies
+- DPLL Linear/mean-delta factors, shifted limits, and worst-case guard-bands
+- TXLO/TXPA Median_Deltas factors, residuals, corrected limits, and special requirement policies
 - Kf-assisted coefficients, fit metrics, residuals, and limits
+- four-model calculations, requirement-based Max_residuals limits, two-figure plots, and FE/BE plot dispatch
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
-The complete suite currently contains 45 tests, including profile parsing, insertion validation and extraction, persistence,
+The complete suite currently contains 57 tests, including profile parsing, insertion validation and extraction, persistence,
 built-in protection, and runtime registry integration. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
 differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
 separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).

@@ -50,9 +50,11 @@ def custom_spec() -> dict[str, object]:
         "test_name_column": "Test Name",
         "guard_band_kind": "distribution_sigma",
         "sigma_multiplier": "6",
+        "physics_kf_enabled": "Disabled",
         "covariate_value_column": "",
         "covariate_merge_keys": "",
-        "covariate_output_name": "Covariate",
+        "covariate_output_name": "Kf",
+        "covariate_test_number": "52046",
         "insertions": [{
             "name": "S1",
             "group": "FE",
@@ -91,6 +93,20 @@ def test_custom_profile_builds_extraction_and_correlation_models() -> None:
     assert correlation.group_by == ("Test Number", "Voltage corner", "Insertion", "Temperature")
     assert correlation.minimum_points == 3
     assert correlation.covariate is None
+
+
+def test_existing_custom_profile_gets_automatic_insertion_aware_kf_defaults() -> None:
+    spec = custom_spec()
+    spec.pop("physics_kf_enabled")
+
+    extraction, correlation = profile_spec_to_models("my-current", spec)
+
+    assert correlation.covariate is not None
+    assert correlation.covariate.value_column == "Test Value"
+    assert correlation.covariate.merge_keys == ("DUT Nr", "Temperature", "Insertion")
+    assert correlation.covariate.output_name == "Kf"
+    assert correlation.covariate.test_number == 52046
+    assert extraction.selector.matches(52046, "Kf")
 
 
 def test_be_fuse_coordinate_fallback_is_the_custom_profile_default() -> None:
@@ -142,6 +158,9 @@ def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:
             "strategy": "mean_delta",
             "guard_band_kind": "shifted_upper_limit",
             "sigma_multiplier": 6,
+            "requirement_min": 8,
+            "requirement_max": 16,
+            "pooled_columns": "Test Number",
         },
         {
             "name": "Leakage",
@@ -157,9 +176,12 @@ def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:
     assert extraction.selector.matches(201, "unrelated")
     assert extraction.selector.matches(999, "LeakageCurrent hot")
     assert [policy.name for policy in correlation.test_policies] == ["Phase noise", "Leakage"]
-    assert correlation.test_policies[0].strategy == "mean_delta"
-    assert correlation.test_policies[0].guard_band.kind == "shifted_upper_limit"
-    assert correlation.test_policies[1].strategy == "median_offset"
+    assert correlation.test_policies[0].strategy == "Mean_Deltas"
+    assert correlation.test_policies[0].guard_band.kind == "Max_residuals"
+    assert correlation.test_policies[0].guard_band.requirement_min == 8
+    assert correlation.test_policies[0].guard_band.requirement_max == 16
+    assert correlation.test_policies[0].pooled_columns == ("Test Number",)
+    assert correlation.test_policies[1].strategy == "Median_Deltas"
     assert correlation.test_policies[1].guard_band.sigma_multiplier == 4
 
     store = tmp_path / "profiles.json"
@@ -170,6 +192,7 @@ def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:
         "Phase noise",
         "Leakage",
     ]
+    assert reloaded_correlation["my-current"].test_policies[0].pooled_columns == ("Test Number",)
 
 
 def test_custom_profiles_round_trip_through_json_store(tmp_path) -> None:
@@ -214,3 +237,53 @@ def test_invalid_profile_is_rejected() -> None:
     spec["covariate_value_column"] = "Kf"
     with pytest.raises(ValueError, match="must either both be set"):
         profile_spec_to_models("my-current", spec)
+
+    spec = custom_spec()
+    spec["test_sets"] = [{
+        "name": "Invalid pool",
+        "tests": "101",
+        "strategy": "median_offset",
+        "guard_band_kind": "distribution_sigma",
+        "sigma_multiplier": 6,
+        "pooled_columns": "Not A Grouping Column",
+    }]
+    with pytest.raises(ValueError, match="not enabled grouping conditions"):
+        profile_spec_to_models("my-current", spec)
+
+    spec = custom_spec()
+    spec["test_sets"] = [{
+        "name": "Missing requirements",
+        "tests": "101",
+        "strategy": "Mean_Deltas",
+        "guard_band_kind": "Max_residuals",
+        "sigma_multiplier": 6,
+    }]
+    with pytest.raises(ValueError, match="needs numeric REQ_MIN and REQ_MAX"):
+        profile_spec_to_models("my-current", spec)
+
+
+def test_physics_based_test_set_requires_automatic_kf_and_uses_defaults() -> None:
+    spec = custom_spec()
+    spec["test_sets"] = [{
+        "name": "Physics power",
+        "tests": "101",
+        "strategy": "Physics-based",
+        "guard_band_kind": "Max_residuals",
+        "sigma_multiplier": 6,
+        "requirement_min": 9,
+        "requirement_max": 16,
+    }]
+
+    with pytest.raises(ValueError, match="requires automatic Kf extraction"):
+        profile_spec_to_models("my-current", spec)
+
+    spec["physics_kf_enabled"] = "Enabled"
+    _extraction, correlation = profile_spec_to_models("my-current", spec)
+    assert correlation.test_policies[0].strategy == "Physics-based"
+    assert correlation.test_policies[0].guard_band.kind == "Max_residuals"
+    assert correlation.covariate is not None
+    assert correlation.covariate.value_column == "Test Value"
+    assert correlation.covariate.merge_keys == ("DUT Nr", "Temperature", "Insertion")
+    assert correlation.covariate.output_name == "Kf"
+    assert correlation.covariate.test_number == 52046
+    assert _extraction.selector.matches(52046, "Kf")

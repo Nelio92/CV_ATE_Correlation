@@ -9,9 +9,10 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from conftest import DATA_ROOT
+from conftest import DATA_ROOT, PROJECT_ROOT
+from cv_ate_correlation.correlation import attach_covariate_from_test_rows
 from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
-from cv_ate_correlation.profiles_8188 import get_extraction_profile
+from cv_ate_correlation.profiles_8188 import get_correlation_profile, get_extraction_profile
 
 
 @pytest.mark.slow
@@ -27,6 +28,12 @@ def test_full_raw_extraction_matches_golden(profile_name: str, manifest_name: st
         DATA_ROOT / "Raw_Data_TE", extraction_root / manifest_name, get_extraction_profile(profile_name)
     )
     expected = pd.read_excel(extraction_root / golden_name, sheet_name="Extracted_Data")
+    if profile_name in {"ctrx8188-txlo", "ctrx8188-txpa"}:
+        actual = attach_covariate_from_test_rows(actual, get_correlation_profile(profile_name))
+        expected = expected.loc[
+            ~pd.to_numeric(expected["Test Number"], errors="coerce").isin((52046, 52084, 52094))
+        ].copy()
+        assert pd.to_numeric(actual["Kf"], errors="coerce").notna().all()
     for column in actual.select_dtypes(include="object"):
         actual[column] = actual[column].mask(actual[column] == "", np.nan)
     expected["Temperature"] = pd.to_numeric(
@@ -36,10 +43,10 @@ def test_full_raw_extraction_matches_golden(profile_name: str, manifest_name: st
         "Insertion Type", "Wafer", "X", "Y", "Temperature",
         "Voltage corner", "Frequency_GHz", "Test Number", "Test Name",
     ]
-    sort_columns = keys + [column for column in actual.columns if column not in keys]
+    compare_columns = [column for column in expected.columns if column in actual.columns]
+    sort_columns = keys + [column for column in compare_columns if column not in keys]
     actual = actual.sort_values(sort_columns).reset_index(drop=True)
     expected = expected.sort_values(sort_columns).reset_index(drop=True)
-    compare_columns = list(actual.columns)
     if profile_name == "ctrx8188-dpll":
         joined = actual.merge(
             expected, on=keys + ["DoE split"], suffixes=("_raw", "_golden"), validate="one_to_one"
@@ -56,12 +63,11 @@ def test_full_raw_extraction_matches_golden(profile_name: str, manifest_name: st
 
 @pytest.mark.slow
 def test_dpll_streaming_adapter_matches_fresh_legacy_script(tmp_path: Path) -> None:
-    project_root = DATA_ROOT.parent
     extraction_root = DATA_ROOT / "TE_Data_Extraction"
     manifest = extraction_root / "CTRX8188_CV_TE_Correlation_Chip_IDs_DPLL_PN.xlsx"
     legacy_output = tmp_path / "legacy_dpll.xlsx"
     subprocess.run([
-        sys.executable, str(project_root / "Tests_Data_Extractor_Flat.py"),
+        sys.executable, str(PROJECT_ROOT / "Tests_Data_Extractor_Flat.py"),
         "--input-folder", str(DATA_ROOT / "Raw_Data_TE"),
         "--output-xlsx", str(legacy_output),
         "--chips-file", str(manifest),

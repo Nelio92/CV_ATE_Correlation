@@ -9,3 +9,5 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 DATA_ROOT = PROJECT_ROOT / "Data"
+if not DATA_ROOT.exists():
+    DATA_ROOT = PROJECT_ROOT.parent / "Data"
