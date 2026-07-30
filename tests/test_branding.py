@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from cv_ate_correlation.gui import LOGO_ASSET_SIZES, logo_asset_path
+from cv_ate_correlation import __author__, __version__
+from cv_ate_correlation.gui import (
+    APPLICATION_AUTHOR,
+    APPLICATION_VERSION,
+    LOGO_ASSET_SIZES,
+    about_information,
+    logo_asset_path,
+)
 
 
 @pytest.mark.parametrize("size", LOGO_ASSET_SIZES)
@@ -26,5 +33,23 @@ def test_branding_assets_are_declared_as_package_data() -> None:
     assert '"assets/*.png"' in configuration
     assert '"assets/*.svg"' in configuration
     assert '"assets/*.ico"' in configuration
+    assert 'Wandji Lionel Wilfried (ES RF D RAD PTE TE4)' in configuration
     assert (assets / "correlate-signal-bloom.svg").is_file()
     assert (assets / "correlate-signal-bloom.ico").read_bytes().startswith(b"\x00\x00\x01\x00")
+
+
+def test_about_information_uses_package_identity_and_documents_capabilities() -> None:
+    information = dict(about_information())
+
+    assert APPLICATION_VERSION == __version__ == "0.1.0"
+    assert APPLICATION_AUTHOR == __author__ == "Wandji Lionel Wilfried (ES RF D RAD PTE TE4)"
+    assert information["Version"] == __version__
+    assert information["Author"] == __author__
+    assert "Physics-based" in information["Correlation models"]
+    assert "automatic Kf" in information["Correlation models"]
+    assert "Custom profile store" not in information
+    assert "Signal Bloom" in information["Visual identity"]
+    assert "blue ATE" in information["Visual identity"]
+    assert "green Lab" in information["Visual identity"]
+    assert "golden fitted path" in information["Visual identity"]
+    assert "transparent, traceable data" in information["Visual identity"]

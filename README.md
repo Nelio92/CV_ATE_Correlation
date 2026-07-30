@@ -1,12 +1,41 @@
-# CV_ATE_Correlation
+# CorreLaTE: ATE-to-Lab Correlation
 
-Repository dedicated to the CTRX8188 CV versus ATE correlation activity that was previously kept in `Tasks_Automation_Code/IFX_Scripts/8188_CV_ATE_Correlation`.
+![CorreLaTE Signal Bloom logo](src/cv_ate_correlation/assets/correlate-signal-bloom.svg)
 
-This migration was done with preserved git history for the transferred folder, then completed with repository-local documentation and visuals.
+**Version:** 0.1.0  
+**Author:** Wandji Lionel Wilfried (ES RF D RAD PTE TE4)
+
+CorreLaTE is a profile-driven Python application for extracting ATE data, creating a controlled Lab/CV measurement
+handoff, validating returned measurements, fitting ATE-to-Lab correlation models, calculating guard bands, and generating
+focused Excel reports and diagnostic plots. The same engine is available through a five-step Tkinter desktop workflow and
+a command-line interface.
+
+This repository also retains the original CTRX8188 analysis scripts that were migrated from
+`Tasks_Automation_Code/IFX_Scripts/8188_CV_ATE_Correlation` with their history. They remain useful as traceable legacy
+references and golden-regression baselines while the subsystem-neutral package under `src/cv_ate_correlation` is the
+recommended implementation for new workflows.
+
+## About
+
+| Item | Information |
+| --- | --- |
+| Application | **CorreLaTE: ATE-to-Lab Correlation** |
+| Version | `0.1.0` |
+| Author | **Wandji Lionel Wilfried (ES RF D RAD PTE TE4)** |
+| Interfaces | Five-step desktop GUI and `cv-ate-correlation` CLI using one shared engine |
+| Correlation models | Linear OLS, `Mean_Deltas`, `Median_Deltas`, and Physics-based with automatic Kf |
+| Guard-band policies | `distribution_sigma` and `Max_residuals` |
+| Reports | Focused factors and guard bands, all-model diagnostics, row-level data, and per-group PNG plots |
+| Visual identity | **Signal Bloom** — blue ATE and green Lab petals converge around a golden fitted path. The bloom represents scattered measurements becoming one coherent correlated result, while the white points emphasize transparent, traceable data. |
+
+An elegant **About** button occupies the free upper-right area of the desktop header. It opens a compact information dialog
+containing the application identity, capability summary, workflow overview, and TE/Lab data-handling guidance. Measurement
+processing is local. ATE values, limits, and internal Kf are excluded from the workbook sent to Lab/CV; the separate ATE
+manifest remains on the TE side.
 
 ![CV ATE Correlation Overview](docs/images/activity-overview.svg)
 
-## What This Activity Covers
+## What This Repository Covers
 
 The work in this repository supports correlation between characterization / CV data and ATE production-test data for several CTRX8188 use cases:
 
@@ -16,18 +45,19 @@ The work in this repository supports correlation between characterization / CV d
 - Kf-assisted correlation for PA / LO behavior
 - Raw TE data extraction for selected DUTs, wafers, coordinates, and test ranges
 
-At a high level, the activity follows this flow:
+At a high level, the current CorreLaTE workflow is:
 
-1. Extract relevant ATE raw data for the DUT population and tests of interest.
-2. Build Excel workbooks that align CV and ATE measurements on common keys such as DUT number, wafer, X/Y, temperature, voltage corner, frequency, and test number.
-3. Run one of the correlation scripts depending on the parameter family under study.
-4. Review the generated Excel summaries, row-level residual tables, updated limits, and per-group plots.
+1. Select a validated built-in profile or create a reusable custom profile for the test sets and insertions of interest.
+2. Stream and extract relevant ATE raw data, including automatic Kf test `52046` attachment when configured.
+3. Generate a Lab/CV request and a separate internal ATE manifest, then validate and align the returned measurements.
+4. Calculate all four model diagnostics while applying the strategy and guard-band policy selected for each test set.
+5. Review focused factors and new limits, full row-level diagnostics, and two auto-fitted PNG figures per group.
 
 ![Illustrative Correlation Plot](docs/images/illustrative-correlation-plot.svg)
 
 ## CorreLaTE Automated Tool
 
-The repository now includes **CorreLaTE: ATE-to-Lab Correlation**, an installable, subsystem-neutral package under `src/cv_ate_correlation`.
+The installable, subsystem-neutral package is implemented under `src/cv_ate_correlation`.
 It provides one shared calculation engine through both a command-line interface and a lightweight desktop GUI.
 Campaign-specific details—including selected tests, dimensions, grouping, strategy, limits, special requirements,
 covariate keys, and guard-band directions—are isolated in profiles rather than hard-coded in the engine.
@@ -142,7 +172,8 @@ Launch the GUI with:
 cv-ate-correlation gui
 ```
 
-The GUI and CLI use the same engine and persistent profile registry. The desktop interface provides five guided tabs:
+The GUI and CLI use the same engine and persistent profile registry. The Signal Bloom mark appears beside the CorreLaTE
+wordmark and is also used as the application window icon. The desktop interface provides five guided workflow tabs:
 
 1. `Profiles` — create, validate, update, or delete a reusable custom profile.
 2. `Extract TE` — select an extraction profile, chip manifest, and output workbook. Built-in profiles also select a
@@ -150,6 +181,10 @@ The GUI and CLI use the same engine and persistent profile registry. The desktop
 3. `Create CV Request` — generate the editable CV workbook and separate internal ATE manifest.
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
 5. `Correlate` — generate the Excel report and optional PNG plots using the Kf retained in the aligned input.
+
+The upper-right `About` button opens a focused dialog with the application version, author, supported models and guard-band
+policies, report outputs, expanded Signal Bloom meaning, workflow summary, and safe TE/Lab handoff guidance. Keeping About
+in the header leaves the notebook dedicated to the five numbered operational steps.
 
 Workflow file fields are visually classified to prevent direction mistakes:
 
@@ -316,8 +351,8 @@ The current suite validates:
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
-The complete suite currently contains 57 tests, including profile parsing, insertion validation and extraction, persistence,
-built-in protection, and runtime registry integration. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
+The suite includes profile parsing, insertion validation and extraction, persistence, built-in protection, runtime registry
+integration, branding assets, and About metadata validation. Eight DPLL cells for FE wafer 15, X=14, Y=6 at 135 °C
 differ between the current raw CSV and the historical extracted workbook. The regression records this as source-data drift and
 separately proves that the new streaming adapter matches fresh output from the legacy script exactly (750 rows × 15 columns).
 
@@ -325,6 +360,9 @@ separately proves that the new streaming adapter matches fresh output from the l
 
 | File | Purpose |
 | --- | --- |
+| `src/cv_ate_correlation/` | Current CorreLaTE package: shared models, extraction, handoff, correlation, guard-band, reporting, CLI, GUI, and profile registry. |
+| `src/cv_ate_correlation/assets/` | Selected Signal Bloom branding in SVG, 64/256 px transparent PNG, and multi-resolution ICO formats. |
+| `tests/` | Unit, workflow, reporting, branding, and campaign-backed golden regression coverage. |
 | `Tests_Data_Extractor_Flat.py` | Extracts targeted ATE raw data from `.xlsx` and `.csv` inputs for selected DUTs and test ranges, then writes a consolidated Excel workbook. |
 | `CV_ATE_Correlation_DPLL.py` | Performs delta-based CV ↔ ATE correlation for DPLL phase-noise data and derives updated ATE high limits plus worst-case guard-band limits. |
 | `CV_ATE_Correlation_Linear_TXLO_TXPA.py` | Performs offset-only median-delta correlation for TXLO / TXPA power data and derives correlated limits plus residual-based guard-bands. |

@@ -13,3 +13,4 @@ __all__ = [
 ]
 
 __version__ = "0.1.0"
+__author__ = "Wandji Lionel Wilfried (ES RF D RAD PTE TE4)"

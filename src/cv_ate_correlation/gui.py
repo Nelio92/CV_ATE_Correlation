@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from cv_ate_correlation import __author__, __version__
 from cv_ate_correlation.correlation import attach_covariate_from_test_rows, correlate_frame
 from cv_ate_correlation.excel import write_dataframe_workbook
 from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
@@ -56,6 +57,8 @@ from cv_ate_correlation.reporting import write_excel_report, write_plots
 
 Action = Callable[[], str]
 APPLICATION_TITLE = "CorreLaTE: ATE-to-Lab Correlation"
+APPLICATION_AUTHOR = __author__
+APPLICATION_VERSION = __version__
 LOGO_ASSET_SIZES = (64, 256)
 
 
@@ -64,6 +67,24 @@ def logo_asset_path(size: int = 64) -> Path:
     if size not in LOGO_ASSET_SIZES:
         raise ValueError(f"Unsupported logo size {size}; choose one of {LOGO_ASSET_SIZES}")
     return Path(__file__).resolve().with_name("assets") / f"correlate-signal-bloom-{size}.png"
+
+
+def about_information() -> tuple[tuple[str, str], ...]:
+    """Return the facts displayed in the About section."""
+    return (
+        ("Version", APPLICATION_VERSION),
+        ("Author", APPLICATION_AUTHOR),
+        ("Interface", "Five-step desktop workflow and command-line interface using one shared engine"),
+        ("Correlation models", "Linear (OLS), Mean_Deltas, Median_Deltas, and Physics-based with automatic Kf"),
+        ("Guard-band policies", "distribution_sigma and Max_residuals"),
+        ("Reports", "Focused factors and guard bands, complete diagnostics, row-level data, and PNG plots"),
+        (
+            "Visual identity",
+            "Signal Bloom — blue ATE and green Lab petals converge around a golden fitted path. "
+            "The bloom represents scattered measurements becoming one coherent correlated result; "
+            "the white points emphasize transparent, traceable data.",
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -531,7 +552,7 @@ def workbook_sheet_names(path: str | Path) -> tuple[str, ...]:
 
 
 class CorrelationDesktopApp:
-    """Five-step Tkinter shell around the pure extraction/correlation engine."""
+    """Five-step Tkinter shell with an About section around the shared engine."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -542,6 +563,7 @@ class CorrelationDesktopApp:
         style = ttk.Style(root)
         style.configure("BrandTitle.TLabel", foreground="#173F73", font=("Segoe UI", 22, "bold"))
         style.configure("BrandSubtitle.TLabel", foreground="#278F9E", font=("Segoe UI", 10))
+        style.configure("About.TButton", font=("Segoe UI", 9, "bold"), padding=(12, 7))
         style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
         style.configure("Hint.TLabel", foreground="#555555")
         style.configure("Input.TLabel", foreground="#1F4E78", font=("Segoe UI", 9, "bold"))
@@ -556,6 +578,7 @@ class CorrelationDesktopApp:
             except tk.TclError:
                 self._window_icon = None
         self._header_logo = self._load_logo(64)
+        self._about_dialog: tk.Toplevel | None = None
         self._build_brand_header()
 
         self.notebook = ttk.Notebook(root)
@@ -592,6 +615,7 @@ class CorrelationDesktopApp:
     def _build_brand_header(self) -> None:
         header = ttk.Frame(self.root, padding=(16, 10, 16, 8))
         header.pack(fill="x")
+        header.columnconfigure(2, weight=1)
         text_column = 0
         if self._header_logo is not None:
             ttk.Label(header, image=self._header_logo).grid(
@@ -604,7 +628,93 @@ class CorrelationDesktopApp:
         ttk.Label(header, text="ATE-to-Lab Correlation", style="BrandSubtitle.TLabel").grid(
             row=1, column=text_column, pady=(0, 3), sticky="nw"
         )
+        ttk.Button(
+            header,
+            text="ⓘ  About",
+            style="About.TButton",
+            command=self._show_about_dialog,
+        ).grid(row=0, column=3, rowspan=2, padx=(24, 0), sticky="e")
         ttk.Separator(self.root, orient="horizontal").pack(fill="x")
+
+    def _show_about_dialog(self) -> None:
+        if self._about_dialog is not None and self._about_dialog.winfo_exists():
+            self._about_dialog.lift()
+            self._about_dialog.focus_force()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        self._about_dialog = dialog
+        dialog.title(f"About CorreLaTE {APPLICATION_VERSION}")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        if self._window_icon is not None:
+            try:
+                dialog.iconphoto(True, self._window_icon)
+            except tk.TclError:
+                pass
+
+        content = ttk.Frame(dialog, padding=24)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+
+        identity = ttk.Frame(content)
+        identity.grid(row=0, column=0, sticky="ew")
+        if self._header_logo is not None:
+            ttk.Label(identity, image=self._header_logo).grid(
+                row=0, column=0, rowspan=3, padx=(0, 14), sticky="nw"
+            )
+        ttk.Label(identity, text="CorreLaTE", style="BrandTitle.TLabel").grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(identity, text="ATE-to-Lab Correlation", style="BrandSubtitle.TLabel").grid(
+            row=1, column=1, sticky="w"
+        )
+        ttk.Label(
+            identity,
+            text="Profile-driven extraction, measurement handoff, correlation, guard-banding, and reporting.",
+            style="Hint.TLabel",
+            wraplength=620,
+        ).grid(row=2, column=1, pady=(5, 0), sticky="w")
+
+        ttk.Separator(content, orient="horizontal").grid(row=1, column=0, pady=16, sticky="ew")
+        information = ttk.Frame(content)
+        information.grid(row=2, column=0, sticky="ew")
+        information.columnconfigure(1, weight=1)
+        for row, (label, value) in enumerate(about_information()):
+            ttk.Label(information, text=label, font=("Segoe UI", 9, "bold")).grid(
+                row=row, column=0, padx=(0, 18), pady=4, sticky="nw"
+            )
+            ttk.Label(information, text=value, wraplength=590, justify="left").grid(
+                row=row, column=1, pady=4, sticky="nw"
+            )
+
+        guidance = ttk.LabelFrame(content, text="Workflow and data handling", padding=12)
+        guidance.grid(row=3, column=0, pady=(16, 0), sticky="ew")
+        ttk.Label(
+            guidance,
+            text=(
+                "Profiles → Extract ATE and Kf → Create the Lab/CV request → Validate and align returned results → "
+                "Generate factors, guard bands, reports, and model plots. Measurement processing is local. "
+                "The Lab/CV request omits ATE values, limits, and internal Kf; keep the separate ATE manifest on the TE side."
+            ),
+            style="Hint.TLabel",
+            wraplength=720,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+
+        def close_dialog() -> None:
+            self._about_dialog = None
+            dialog.destroy()
+
+        ttk.Button(content, text="Close", command=close_dialog).grid(
+            row=4, column=0, pady=(18, 0), sticky="e"
+        )
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + self.root.winfo_width() - dialog.winfo_reqwidth() - 24
+        y = self.root.winfo_rooty() + 72
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+        dialog.grab_set()
 
     def _make_tab(self, title: str, heading: str, hint: str) -> ttk.Frame:
         scrollable = ScrollablePage(self.notebook, padding=18)
