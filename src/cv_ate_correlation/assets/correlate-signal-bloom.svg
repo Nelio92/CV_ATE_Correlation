@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">CorreLaTE Signal Bloom</title>
+  <desc id="desc">Correlated data points bloom around a precise golden fit.</desc>
+  <defs>
+    <linearGradient id="petalA" x1="23" y1="102" x2="78" y2="26" gradientUnits="userSpaceOnUse"><stop stop-color="#173F73"/><stop offset="1" stop-color="#38A6E8"/></linearGradient>
+    <linearGradient id="petalB" x1="43" y1="108" x2="108" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#1F7950"/><stop offset="1" stop-color="#63C986"/></linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#10243D" flood-opacity=".22"/></filter>
+  </defs>
+  <path d="M63 63C34 59 18 43 26 27c18-6 34 11 37 36Z" fill="url(#petalA)" opacity=".96"/>
+  <path d="M65 63c6-29 24-43 40-33 4 19-14 33-40 33Z" fill="url(#petalB)" opacity=".96"/>
+  <path d="M64 65c29 3 45 20 36 37-19 5-34-12-36-37Z" fill="url(#petalA)" opacity=".9"/>
+  <path d="M62 65c-4 29-22 44-39 35-5-18 13-34 39-35Z" fill="url(#petalB)" opacity=".9"/>
+  <path d="M22 100L106 28" stroke="#F2B544" stroke-width="8" stroke-linecap="round" filter="url(#shadow)"/>
+  <g fill="#fff" stroke="#F2B544" stroke-width="3">
+    <circle cx="35" cy="89" r="6"/><circle cx="50" cy="76" r="6"/><circle cx="64" cy="64" r="7"/>
+    <circle cx="79" cy="51" r="6"/><circle cx="94" cy="38" r="6"/>
+  </g>
+  <circle cx="64" cy="64" r="5" fill="#173F73"/>
+</svg>

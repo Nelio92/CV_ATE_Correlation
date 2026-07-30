@@ -60,10 +60,10 @@ LOGO_ASSET_SIZES = (64, 256)
 
 
 def logo_asset_path(size: int = 64) -> Path:
-    """Return the packaged Prism Align logo at a supported pixel size."""
+    """Return the packaged Signal Bloom logo at a supported pixel size."""
     if size not in LOGO_ASSET_SIZES:
         raise ValueError(f"Unsupported logo size {size}; choose one of {LOGO_ASSET_SIZES}")
-    return Path(__file__).resolve().with_name("assets") / f"correlate-prism-align-{size}.png"
+    return Path(__file__).resolve().with_name("assets") / f"correlate-signal-bloom-{size}.png"
 
 
 @dataclass(frozen=True)
