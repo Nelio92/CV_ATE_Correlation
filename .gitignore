@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.venv/
+build_pyinstaller/
+dist_pyinstaller/
+release_pyinstaller/
+release_packages/

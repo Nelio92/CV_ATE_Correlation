@@ -68,6 +68,37 @@ covariate keys, and guard-band directions—are isolated in profiles rather than
 
 ### Installation
 
+#### Standalone Windows application
+
+Team users should download `CorreLaTE-v0.1.0-windows-x64.zip` from the repository's Releases page, verify the published
+SHA-256 checksum, extract the complete ZIP to a local folder, and double-click `CorreLaTE.exe`. The standalone application
+requires 64-bit Windows but does not require Python, administrator rights, or internet access. Measurement data remains
+local and is read from or written to user-selected locations. Custom profiles persist under
+`%APPDATA%\CorreLaTE\profiles.json` across executable upgrades.
+
+Do not execute the application directly from inside the ZIP archive. Unsigned internal builds can trigger Microsoft
+Defender SmartScreen; verify the checksum and release source before using **More info → Run anyway**. Startup failures are
+written to `%LOCALAPPDATA%\CorreLaTE\logs\startup-error.log`.
+
+Maintainers can build, test, smoke-test, and stage the executable from this folder:
+
+```powershell
+.\build_correlate_exe.ps1 -Clean
+```
+
+Create the versioned ZIP, ZIP checksum, executable checksum, and source-provenance metadata with:
+
+```powershell
+.\package_correlate_release.ps1
+```
+
+The Windows release workflow also builds downloadable artifacts on manual dispatch. A tag matching
+`correlate-v<major>.<minor>.<patch>` publishes the ZIP and checksums to a GitHub Release. The tag version must match the
+version in `pyproject.toml`; package paths are derived automatically. Organizational Authenticode signing is
+recommended before broad team distribution to replace the unsigned-build SmartScreen warning with a trusted publisher.
+
+#### Python development installation
+
 From this folder, install the package and test dependencies into the active Python environment:
 
 ```powershell

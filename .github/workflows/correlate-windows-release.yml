@@ -1,0 +1,58 @@
+name: CorreLaTE Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'correlate-v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-pyinstaller-build.txt
+
+      - name: Create virtual environment
+        shell: pwsh
+        run: python -m venv .venv
+
+      - name: Build and validate standalone executable
+        shell: pwsh
+        run: ./build_correlate_exe.ps1 -Clean
+
+      - name: Package release archive
+        shell: pwsh
+        run: ./package_correlate_release.ps1 -SkipBuild
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorreLaTE-windows-x64
+          path: release_packages/**/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/correlate-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_packages/**/*.zip
+            release_packages/**/*.sha256.txt
+            release_packages/**/release-metadata.json
+          generate_release_notes: true
