@@ -94,7 +94,7 @@ def about_information() -> tuple[tuple[str, str], ...]:
         ("Guard-band policies", "distribution_sigma, max_residuals, and mean_deltas"),
         (
             "Outlier handling",
-            "Pre-fit scaled-MAD review (default n=6); findings are retained unless the user explicitly enables and selects exclusions",
+            "Pre-fit scaled-MAD review (default n=12); findings are retained unless the user explicitly enables and selects exclusions",
         ),
         (
             "Reports",
@@ -2405,7 +2405,7 @@ class CorrelationDesktopApp:
         ttk.Label(
             form,
             text=(
-                "Pre-fit review threshold using |x−median| / (1.4826×MAD) > n. Default: 6. "
+                "Pre-fit review threshold using |x−median| / (1.4826×MAD) > n. Default: 12. "
                 "Detection is applied separately to each unpooled test/corner population."
             ),
             style="Hint.TLabel",

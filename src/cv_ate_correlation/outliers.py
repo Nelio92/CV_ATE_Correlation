@@ -13,7 +13,7 @@ from .models import CorrelationProfile, TestPolicy, normalize_correlation_strate
 
 
 MAD_SCALE_FACTOR = 1.4826
-DEFAULT_MAD_THRESHOLD = 6.0
+DEFAULT_MAD_THRESHOLD = 12.0
 OUTLIER_ROW_ID = "OutlierRowId"
 OUTLIER_INPUT_ROW = "OutlierInputRow"
 OUTLIER_FLAGGED = "OutlierFlagged"

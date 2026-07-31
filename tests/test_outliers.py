@@ -121,7 +121,7 @@ def test_default_review_retains_all_rows_and_explicit_filtering_is_audited() -> 
     assert filtered_review.excluded_count == 1
     audit = filtered_review.audit_frame()
     assert audit["ReviewStatus"].eq("Excluded").sum() == 1
-    assert audit["MADThreshold"].eq(6.0).all()
+    assert audit["MADThreshold"].eq(12.0).all()
 
 
 def test_selected_exclusions_cannot_reduce_a_correlation_population_below_minimum() -> None:
@@ -162,10 +162,15 @@ def test_outlier_audit_is_written_to_excel_and_html(tmp_path: Path) -> None:
     html = tmp_path / "reviewed.html"
     assert write_html_report(result, profile, html, image_dpi=30, image_quality=30) == 6
     report = html.read_text(encoding="utf-8")
-    assert "Pre-correlation outlier review" in report
-    assert "scaled MAD (1.4826 × MAD), n=6" in report
-    assert "Flagged-sample audit" in report
-    assert "Explicit review only; no automatic exclusions" in report
+    assert "Potential outlier warning." in report
+    assert "Scaled-MAD screening at n=12 flagged" in report
+    assert "3 data point(s)" in report
+    assert "2 were retained and 1 were excluded" in report
+    assert "companion Excel report’s <b>Outlier_Review</b> worksheet separately" in report
+    assert "Pre-correlation outlier review" not in report
+    assert "Flagged-sample audit" not in report
+    assert "Outlier detector" not in report
+    assert "Outlier filtering mode" not in report
 
 
 def test_no_findings_still_produces_detector_settings_audit() -> None:
@@ -186,4 +191,27 @@ def test_no_findings_still_produces_detector_settings_audit() -> None:
     assert analysis.flagged_count == 0
     assert len(filtered) == len(frame)
     assert audit.loc[0, "ReviewStatus"] == "No outliers detected"
-    assert audit.loc[0, "MADThreshold"] == pytest.approx(6.0)
+    assert audit.loc[0, "MADThreshold"] == pytest.approx(12.0)
+
+
+def test_html_omits_outlier_warning_when_no_items_are_flagged(tmp_path: Path) -> None:
+    frame = pd.DataFrame({
+        "DUT Nr": range(1, 7),
+        "Test Number": [101] * 6,
+        "Test Name": ["No anomaly"] * 6,
+        "Corner": ["VNOM"] * 6,
+        "Lab": [1, 2, 3, 4, 5, 6],
+        "ATE": [1, 2, 3, 4, 5, 6],
+    })
+    profile = _review_profile()
+    analysis = analyze_outliers(frame, profile)
+    filtered, review = finalize_outlier_review(analysis, profile)
+    result = attach_outlier_audit(correlate_frame(filtered, profile), profile, review)
+    html = tmp_path / "no-findings.html"
+
+    write_html_report(result, profile, html, image_dpi=30, image_quality=30)
+
+    report = html.read_text(encoding="utf-8")
+    assert "Potential outlier warning." not in report
+    assert "Pre-correlation outlier review" not in report
+    assert "Flagged-sample audit" not in report

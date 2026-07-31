@@ -137,7 +137,7 @@ cv-ate-correlation correlate `
     --profile ctrx8188-dpll `
     --input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
     --sheet FE_Filtered `
-    --mad-threshold 6 `
+    --mad-threshold 12 `
     --output Data/Outputs/DPLL_Correlation_New.xlsx `
     --html-report Data/Outputs/DPLL_Correlation_Signoff.html
 ```
@@ -268,7 +268,7 @@ conservative than protecting against the largest observed post-correction residu
 #### Pre-correlation outlier review
 
 Step 5 performs an auditable outlier review before any production model is fitted. The editable threshold defaults to
-$n=6$ and uses the normal-consistency-scaled median absolute deviation:
+$n=12$ and uses the normal-consistency-scaled median absolute deviation:
 
 $$
 MAD=\operatorname{median}\left(|x_i-\operatorname{median}(x)|\right),\qquad
@@ -300,9 +300,12 @@ select each finding explicitly, and confirm it. CorreLaTE blocks a selection tha
 correlation population below the configured minimum sample count.
 
 The aligned input is never modified. Retained flagged rows remain marked in `Correlated_Data`; every finding and its final
-retained/excluded decision is written to `Outlier_Review`; group summaries record original, flagged, excluded, and final
-counts; and the HTML overview includes detector settings and the complete audit. The CLI follows the same safe default and
-accepts repeated `--exclude-outlier-row ROW_ID` arguments only for explicit, traceable exclusions after a review run.
+retained/excluded decision is written to the companion Excel report's `Outlier_Review` worksheet; and group summaries
+record original, flagged, excluded, and final counts. The detailed outlier audit is intentionally excluded from the HTML
+sign-off report and must be reviewed separately. When findings exist, the HTML displays only a prominent warning with the
+flagged, retained, and excluded totals and a reference to `Outlier_Review`; when no items are flagged, no outlier warning is
+shown. The CLI follows the same safe default and accepts repeated `--exclude-outlier-row ROW_ID` arguments only for
+explicit, traceable exclusions after a review run.
 
 All four model predictions and residuals are calculated for comparison. `Mean_Deltas` and `Median_Deltas` are intentionally
 offset-only models with fixed slope 1; unlike OLS, they do not rotate to follow the point cloud. A low or negative R² therefore

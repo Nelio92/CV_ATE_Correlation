@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mad-threshold",
         type=float,
         default=DEFAULT_MAD_THRESHOLD,
-        help="Scaled-MAD outlier review threshold (default: 6); detection never excludes rows automatically",
+        help="Scaled-MAD outlier review threshold (default: 12); detection never excludes rows automatically",
     )
     correlate.add_argument(
         "--exclude-outlier-row",

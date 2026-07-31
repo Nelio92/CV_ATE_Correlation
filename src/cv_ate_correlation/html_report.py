@@ -407,44 +407,18 @@ def _metadata_table(rows: Sequence[tuple[str, str]]) -> str:
     return f'<div class="table-card"><h3>Profile and analysis</h3><table class="metadata"><tbody>{body}</tbody></table></div>'
 
 
-def _outlier_review_html(review: Any) -> str:
-    audit = review.audit_frame()
-    preferred = (
-        "ReviewStatus",
-        "OutlierInputRow",
-        "TestSet",
-        "Test Number",
-        "Test Name",
-        "DUT Nr",
-        "Wafer",
-        "WAFER",
-        "X",
-        "Y",
-        "DoE split",
-        "Insertion Type",
-        "Insertion",
-        "Temperature",
-        "OutlierFlaggedSeries",
-        "OutlierMaxRobustScore",
-        "LabValue",
-        "LabRobustScore",
-        "ATEValue",
-        "ATERobustScore",
-        "PairedMetric",
-        "PairedValue",
-        "PairedRobustScore",
-        "OutlierReviewGuidance",
-        "OutlierReason",
-        "Excluded",
-    )
-    columns = [column for column in preferred if column in audit.columns]
-    rows = [{column: value for column, value in row.items()} for row in audit.to_dict("records")]
-    labels = [(column, column.replace("Outlier", "Outlier ")) for column in columns]
-    return _table_html(
-        "Flagged-sample audit",
-        rows,
-        labels,
-        table_class="outlier-table",
+def _outlier_warning_html(review: Any) -> str:
+    """Return an HTML warning for findings without duplicating the separate audit report."""
+    if review.flagged_count == 0:
+        return ""
+    return (
+        '<div class="notice outlier-warning" role="alert"><b>Potential outlier warning.</b> '
+        f'Scaled-MAD screening at n={review.threshold:g} flagged '
+        f'<b>{review.flagged_count:,} data point(s)</b> as potential outliers; '
+        f'{review.retained_flagged_count:,} were retained and {review.excluded_count:,} were excluded. '
+        'A statistical flag is not proof of invalid data. Detailed flagged items are intentionally omitted from '
+        'this HTML sign-off report. Review the companion Excel report’s <b>Outlier_Review</b> worksheet separately '
+        'before sign-off.</div>'
     )
 
 
@@ -523,6 +497,7 @@ a { color:var(--blue2); } header { color:#fff; background:linear-gradient(130deg
 h1 { margin:0; font-size:30px; letter-spacing:.2px; } header p { margin:5px 0 0; color:#e9f4fa; }
 .report-shell { max-width:1500px; margin:0 auto; padding:22px; }
 .notice { margin:0 0 18px; padding:13px 16px; border-left:5px solid var(--gold); background:#fff8df; }
+.outlier-warning { color:#741b22; border-left-color:var(--danger); background:#fff0f1; }
 .overview-grid,.table-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; }
 .table-card { background:var(--paper); border:1px solid var(--line); border-radius:10px; box-shadow:0 2px 9px #24384d12; overflow:hidden; }
 .table-card h3 { margin:0; padding:12px 15px; color:#fff; background:var(--blue); font-size:15px; }
@@ -685,18 +660,11 @@ def write_html_report(
         ("Physics/Kf source", covariate),
         ("Invalid correlated limit windows", f"{invalid_windows:,}"),
     ]
-    if result.outlier_review is not None:
-        review = result.outlier_review
-        overview_rows.extend((
-            ("Outlier detector", f"scaled MAD (1.4826 × MAD), n={review.threshold:g}"),
-            ("Outlier filtering mode", "Explicit review only; no automatic exclusions"),
-            ("Outlier samples flagged", f"{review.flagged_count:,}"),
-            ("Flagged samples retained", f"{review.retained_flagged_count:,}"),
-            ("Flagged samples excluded", f"{review.excluded_count:,}"),
-            ("Rows before / after review", f"{review.original_row_count:,} / {review.final_row_count:,}"),
-        ))
-    else:
-        overview_rows.append(("Outlier review", "Not attached to this result"))
+    outlier_warning = (
+        _outlier_warning_html(result.outlier_review)
+        if result.outlier_review is not None
+        else ""
+    )
 
     family_sections: list[str] = []
     family_index_items: list[str] = []
@@ -784,9 +752,9 @@ def write_html_report(
 </div></div></header>
 <main class="report-shell">
 <div class="notice"><b>Sign-off scope.</b> This self-contained report is the human-review artifact. The companion Excel report remains the numerical authority for complete summary and row-level data. Images and styling are embedded; no network connection or external plot folder is required.</div>
+{outlier_warning}
 <h2>High-level correlation information</h2>
 <div class="overview-grid">{_metadata_table(overview_rows)}{_overview_dimensions(details, profile)}</div>
-{('<h2>Pre-correlation outlier review</h2>' + _outlier_review_html(result.outlier_review)) if result.outlier_review is not None else ''}
 <h2>Test-family review</h2>
 <div class="controls"><input id="family-search" type="search" placeholder="Filter by test number, test name, test set, strategy, or policy…" aria-label="Filter test families"><button id="expand-all" type="button">Expand visible</button><button id="collapse-all" type="button">Collapse all</button><span><b id="visible-count">{len(families)}</b> / {len(families)} families</span></div>
 <ol class="family-index">{''.join(family_index_items)}</ol>
