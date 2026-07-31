@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -27,6 +26,7 @@ class YieldForecastResult:
 
     summary: pd.DataFrame
     details: pd.DataFrame
+    rejected: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,10 @@ def _attach_productive_covariate(
 
     lookup = frame.loc[covariate_mask].copy()
     targets = frame.loc[~covariate_mask].copy()
+    if not requires_physics:
+        # Kf rows are not yield targets. Remove them, but do not require usable
+        # Kf values when no selected test set uses the Physics-based strategy.
+        return targets
     coordinate_keys = [
         column for column in (
             "Productive Source File", "Wafer", "WAFER", "X", "Y", "Temperature", "Insertion",
@@ -145,6 +149,85 @@ def _attach_productive_covariate(
     return prepared
 
 
+def _productive_candidate_values(
+    frame: pd.DataFrame,
+    profile: CorrelationProfile,
+) -> tuple[pd.Series, pd.Series]:
+    """Coalesce numeric raw values by row without trusting a blank configured alias."""
+    normalized_columns: dict[str, list[str]] = {}
+    for column in frame.columns:
+        normalized = re.sub(r"[^a-z0-9]+", "", str(column).casefold())
+        normalized_columns.setdefault(normalized, []).append(str(column))
+
+    candidates: list[str] = []
+    for requested in ("Test Value", profile.candidate_column, "Test Values"):
+        normalized = re.sub(r"[^a-z0-9]+", "", requested.casefold())
+        for column in normalized_columns.get(normalized, []):
+            if column not in candidates:
+                candidates.append(column)
+    if not candidates:
+        raise ValueError(
+            f"Productive extraction has no raw test-value column. Expected 'Test Value' "
+            f"or configured ATE candidate '{profile.candidate_column}'; available columns: "
+            f"{', '.join(str(column) for column in frame.columns)}"
+        )
+
+    numeric_by_column = {column: _to_numeric(frame[column]) for column in candidates}
+    numeric_counts = {
+        column: int(values.notna().sum()) for column, values in numeric_by_column.items()
+    }
+    if not any(numeric_counts.values()):
+        counts = ", ".join(
+            f"'{column}': 0 numeric, representative raw values="
+            f"{frame[column].astype(str).drop_duplicates().head(5).tolist()}"
+            for column in candidates
+        )
+        source_files = (
+            frame["Productive Source File"].astype(str).value_counts().head(5).to_dict()
+            if "Productive Source File" in frame.columns else {}
+        )
+        source_text = "; ".join(
+            f"{Path(path).name}: {count:,} rows" for path, count in source_files.items()
+        )
+        tests = (
+            frame["Test Number"].astype(str).value_counts().head(10).to_dict()
+            if "Test Number" in frame.columns else {}
+        )
+        test_text = ", ".join(f"{test}: {count:,} rows" for test, count in tests.items())
+        raise ValueError(
+            f"No usable productive ATE measurements were found in {len(frame):,} extracted row(s). "
+            f"Candidate columns checked: {counts}."
+            + (f" Productive files: {source_text}." if source_text else "")
+            + (f" Most frequent extracted tests: {test_text}." if test_text else "")
+            + f" Available columns: {', '.join(str(column) for column in frame.columns)}."
+            + " Verify that the selected CSVs are raw wide TE exports, that the configured tests were executed, "
+            "and that their result cells are populated."
+        )
+
+    values = pd.Series(math.nan, index=frame.index, dtype="float64")
+    sources = pd.Series("", index=frame.index, dtype="object")
+    for column in candidates:
+        candidate = numeric_by_column[column]
+        overlap = values.notna() & candidate.notna()
+        scale = pd.concat((values.abs(), candidate.abs()), axis=1).max(axis=1).clip(lower=1.0)
+        conflict = overlap & (values.sub(candidate).abs() > 1e-9 * scale)
+        if bool(conflict.any()):
+            examples = "; ".join(
+                f"row {index}: {sources.at[index]}={values.at[index]:.15g}, "
+                f"{column}={candidate.at[index]:.15g}"
+                for index in conflict[conflict].index[:5]
+            )
+            raise ValueError(
+                f"Productive data contains {int(conflict.sum()):,} conflicting numeric value(s) "
+                f"between candidate columns. Examples: {examples}. Remove the stale duplicate "
+                "column or make its values agree with the canonical 'Test Value' column."
+            )
+        fill = values.isna() & candidate.notna()
+        values.loc[fill] = candidate.loc[fill]
+        sources.loc[fill] = column
+    return values, sources
+
+
 def load_productive_csv_inputs(
     assignments: tuple[ProductiveInsertionInput, ...],
     extraction_profile: ExtractionProfile,
@@ -162,13 +245,12 @@ def load_productive_csv_inputs(
     ]
     frame = pd.concat(frames, ignore_index=True)
     frame = _attach_productive_covariate(frame, correlation_profile)
-    if correlation_profile.candidate_column not in frame.columns:
-        if "Test Value" not in frame.columns:
-            raise ValueError(
-                f"Productive extraction has neither '{correlation_profile.candidate_column}' "
-                "nor 'Test Value'"
-            )
-        frame[correlation_profile.candidate_column] = frame["Test Value"]
+    numeric_values, source_columns = _productive_candidate_values(frame, correlation_profile)
+    # Productive extraction always emits the canonical raw value as Test Value.
+    # Explicitly populate the profile alias even if that alias already exists as
+    # an all-blank output column (for example, Test Values versus Test Value).
+    frame[correlation_profile.candidate_column] = numeric_values
+    frame["Productive Value Source Column"] = source_columns
     return frame
 
 
@@ -358,12 +440,42 @@ def forecast_yield(
         raise ValueError("Productive test data is empty")
 
     prepared = prepared.copy()
-    prepared[profile.candidate_column] = _to_numeric(prepared[profile.candidate_column])
-    invalid_candidates = int(prepared[profile.candidate_column].isna().sum())
-    if invalid_candidates:
+    original_candidates = prepared[profile.candidate_column].copy()
+    numeric_candidates = _to_numeric(original_candidates)
+    invalid_mask = numeric_candidates.isna()
+    rejected = prepared.loc[invalid_mask].copy()
+    if not rejected.empty:
+        text = original_candidates.loc[invalid_mask].astype(str).str.strip()
+        blank = text.str.casefold().isin({"", "nan", "none", "na", "n/a", "null"})
+        rejected["ForecastRejectionReason"] = blank.map({
+            True: "Blank productive ATE value",
+            False: "Non-numeric productive ATE value",
+        }).to_numpy()
+        rejected["ForecastRejectedValue"] = original_candidates.loc[invalid_mask].to_numpy()
+    prepared = prepared.loc[~invalid_mask].copy()
+    prepared[profile.candidate_column] = numeric_candidates.loc[~invalid_mask]
+    if prepared.empty:
+        source_files = (
+            rejected["Productive Source File"].astype(str).value_counts().head(5).to_dict()
+            if "Productive Source File" in rejected.columns else {}
+        )
+        source_text = "; ".join(
+            f"{Path(path).name}: {count:,} rows" for path, count in source_files.items()
+        )
+        tests = (
+            rejected["Test Number"].astype(str).value_counts().head(10).to_dict()
+            if "Test Number" in rejected.columns else {}
+        )
+        test_text = ", ".join(f"{test}: {count:,} rows" for test, count in tests.items())
+        examples = original_candidates.astype(str).drop_duplicates().head(5).tolist()
         raise ValueError(
-            f"Productive test data contains {invalid_candidates:,} blank or non-numeric "
-            f"'{profile.candidate_column}' value(s)"
+            f"No yield forecast can be calculated because all {len(rejected):,} extracted productive "
+            f"row(s) have blank or non-numeric '{profile.candidate_column}' values."
+            + (f" Productive files: {source_text}." if source_text else "")
+            + (f" Most frequent extracted tests: {test_text}." if test_text else "")
+            + f" Representative raw values: {examples}. Available columns: "
+            + f"{', '.join(str(column) for column in rejected.columns)}."
+            + " Verify the CSV format and confirm that the selected tests contain executed numeric results."
         )
 
     lookups = _factor_lookup(correlation_summary.reset_index(drop=True), profile)
@@ -508,4 +620,8 @@ def forecast_yield(
 
     details["ForecastGroupIndex"] = detail_group_indices.astype("int64")
     summary = pd.DataFrame(summary_rows)
-    return YieldForecastResult(summary=summary, details=details)
+    return YieldForecastResult(
+        summary=summary,
+        details=details,
+        rejected=rejected.reset_index(drop=True),
+    )

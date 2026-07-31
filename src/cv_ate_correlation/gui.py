@@ -2767,6 +2767,7 @@ class CorrelationDesktopApp:
                 plot_count = write_yield_forecast_html(result, selected_profile, destination)
                 samples = int(result.summary["SampleCount"].sum())
                 failures = int(result.summary["FailCount"].sum())
+                skipped = len(result.rejected)
                 yield_percent = 100.0 * (samples - failures) / samples
                 affected = int(result.summary.loc[
                     result.summary["FailCount"].gt(0), "Test Number"
@@ -2774,6 +2775,7 @@ class CorrelationDesktopApp:
                 return (
                     f"Forecasted {samples:,} productive samples at {yield_percent:.6g}% yield; "
                     f"{failures:,} failure(s) across {affected:,} affected test(s). "
+                    f"Skipped {skipped:,} blank/non-numeric row(s). "
                     f"Embedded {plot_count:,} insertion CDF plots in {destination}."
                 )
 

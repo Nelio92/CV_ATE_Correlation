@@ -218,8 +218,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         samples = int(result.summary["SampleCount"].sum())
         failures = int(result.summary["FailCount"].sum())
+        skipped = len(result.rejected)
         print(
             f"Forecasted {samples} productive samples with {failures} failure(s); "
+            f"skipped {skipped} blank/non-numeric row(s); "
             f"wrote {plots} CDF plots to {args.html_report}"
         )
         return 0

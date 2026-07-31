@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -16,8 +17,10 @@ from cv_ate_correlation.models import (
     TestSelector as ProfileTestSelector,
 )
 from cv_ate_correlation.yield_forecast import (
+    ProductiveInsertionInput,
     correlate_productive_value,
     forecast_yield,
+    load_productive_csv_inputs,
     validate_productive_insertion_inputs,
 )
 from cv_ate_correlation.yield_forecast_report import write_yield_forecast_html
@@ -227,6 +230,95 @@ def test_productive_adapter_extracts_all_csv_rows_without_chip_manifest(
     assert result["Productive Source File"].tolist() == [str(csv.resolve())] * 2
 
 
+def test_productive_loading_populates_plural_candidate_from_canonical_raw_value(
+    tmp_path: Path,
+) -> None:
+    csv = tmp_path / "productive.csv"
+    _write_productive_csv(csv)
+    insertion = InsertionProfile("S1", "FE", 135, ())
+    extraction = ExtractionProfile(
+        name="Plural candidate extraction",
+        selector=ProfileTestSelector(exact=(101,)),
+        output_columns=(
+            "Wafer", "X", "Y", "Test Number", "Test Name", "Test Value",
+            "Test Values", "Corner", "Insertion", "Insertion Type", "Temperature",
+        ),
+    )
+    profile = replace(_profile(), candidate_column="Test Values")
+
+    loaded = load_productive_csv_inputs(
+        (ProductiveInsertionInput(insertion, (csv,)),),
+        extraction,
+        profile,
+    )
+
+    assert loaded["Test Values"].tolist() == [4.5, 6.5]
+    assert loaded["Productive Value Source Column"].tolist() == ["Test Value"] * 2
+
+
+def test_forecast_skips_only_unusable_candidate_rows_and_audits_them() -> None:
+    production = _production()
+    production["ATE"] = production["ATE"].astype(object)
+    production.loc[0, "ATE"] = ""
+    production.loc[1, "ATE"] = "not measured"
+
+    result = forecast_yield(production, _factors(), _profile())
+
+    assert len(result.details) == 6
+    assert int(result.summary["SampleCount"].sum()) == 6
+    assert len(result.rejected) == 2
+    assert result.rejected["ForecastRejectionReason"].tolist() == [
+        "Blank productive ATE value",
+        "Non-numeric productive ATE value",
+    ]
+    assert result.rejected["ForecastRejectedValue"].tolist() == ["", "not measured"]
+
+
+def test_forecast_all_invalid_candidates_has_actionable_file_diagnostics() -> None:
+    production = _production()
+    production["ATE"] = ""
+    production["Productive Source File"] = "lot-a.csv"
+
+    with pytest.raises(
+        ValueError,
+        match=r"all 8 extracted productive row\(s\).*lot-a\.csv: 8 rows",
+    ):
+        forecast_yield(production, _factors(), _profile())
+
+
+def test_productive_loading_rejects_conflicting_numeric_candidate_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv = tmp_path / "productive.csv"
+    csv.write_text("placeholder", encoding="utf-8")
+    insertion = InsertionProfile("S1", "FE", 135, ())
+    frame = pd.DataFrame({
+        "Test Number": [101, 101],
+        "Test Value": [4.5, 6.5],
+        "Test Values": [4.5, 99.0],
+        "Insertion": ["S1", "S1"],
+        "Temperature": [135, 135],
+        "Productive Source File": [str(csv), str(csv)],
+    })
+    monkeypatch.setattr(
+        LegacyWideTeCsvAdapter,
+        "extract_productive_files",
+        lambda self, files, profile, selected_insertion: frame.copy(),
+    )
+
+    with pytest.raises(ValueError, match="1 conflicting numeric value"):
+        load_productive_csv_inputs(
+            (ProductiveInsertionInput(insertion, (csv,)),),
+            ExtractionProfile(
+                name="Conflicting candidate extraction",
+                selector=ProfileTestSelector(exact=(101,)),
+                output_columns=tuple(frame.columns),
+            ),
+            replace(_profile(), candidate_column="Test Values"),
+        )
+
+
 def test_yield_html_embeds_cdf_plots_aligns_insertions_and_highlights_failures(
     tmp_path: Path,
 ) -> None:
@@ -252,6 +344,22 @@ def test_yield_html_embeds_cdf_plots_aligns_insertions_and_highlights_failures(
     assert report.index("S1 · FE · 135 °C") < report.index("B1 · BE · 25 °C")
     assert report.count("data:image/") == 3  # Two CDF figures and the logo.
     assert 'src="http' not in report
+
+
+def test_yield_html_reports_rows_skipped_for_invalid_measurements(tmp_path: Path) -> None:
+    production = _production()
+    production["ATE"] = production["ATE"].astype(object)
+    production.loc[0, "ATE"] = ""
+    result = forecast_yield(production, _factors(), _profile())
+    output = tmp_path / "yield-with-skips.html"
+
+    write_yield_forecast_html(result, _profile(), output, image_dpi=35, image_quality=30)
+
+    report = output.read_text(encoding="utf-8")
+    assert "Input quality warning" in report
+    assert "1 extracted row(s) with blank or non-numeric" in report
+    assert "excluded—not converted to zero" in report
+    assert "Skipped blank/non-numeric rows" in report
 
 
 def test_forecast_cli_accepts_repeated_insertion_csv_assignments() -> None:

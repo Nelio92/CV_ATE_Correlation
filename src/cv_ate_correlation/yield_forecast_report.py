@@ -298,6 +298,8 @@ def write_yield_forecast_html(
         families.setdefault(key, []).append(int(index))
 
     total_samples = int(summary["SampleCount"].sum())
+    rejected_samples = len(result.rejected)
+    supplied_samples = total_samples + rejected_samples
     total_fails = int(summary["FailCount"].sum())
     total_passes = total_samples - total_fails
     affected_tests = int(summary.loc[summary["FailCount"].gt(0), "Test Number"].nunique())
@@ -306,7 +308,9 @@ def write_yield_forecast_html(
     metadata = [
         ("Correlation profile", profile.name),
         ("Generated", generated),
+        ("Extracted productive rows", f"{supplied_samples:,}"),
         ("Productive samples", f"{total_samples:,}"),
+        ("Skipped blank/non-numeric rows", f"{rejected_samples:,}"),
         ("Overall forecast yield", f"{overall_yield:.6g}%"),
         ("Forecast PASS / FAIL", f"{total_passes:,} / {total_fails:,}"),
         ("Tests evaluated", f"{len(families):,}"),
@@ -315,6 +319,20 @@ def write_yield_forecast_html(
         ("Factor source", "Approved Correlation_Summary from Section 5"),
         ("Yield rule", "Inclusive correlated limits: LTL ≤ correlated productive value ≤ UTL"),
     ]
+    rejected_notice = ""
+    if rejected_samples:
+        reason_counts = result.rejected.get(
+            "ForecastRejectionReason", pd.Series(dtype="object")
+        ).value_counts()
+        reasons = ", ".join(
+            f"{reason}: {int(count):,}" for reason, count in reason_counts.items()
+        )
+        rejected_notice = (
+            '<div class="notice"><b>Input quality warning.</b> '
+            f'{rejected_samples:,} extracted row(s) with blank or non-numeric productive ATE values '
+            'were excluded—not converted to zero—and are not included in forecast yield. '
+            f'{escape(reasons)}.</div>'
+        )
 
     sections: list[str] = []
     index_items: list[str] = []
@@ -392,6 +410,7 @@ def write_yield_forecast_html(
 <header><div class="brand"><img src="{_logo_data_uri()}" alt="CorreLaTE Signal Bloom logo"><div>
 <h1>CorreLaTE correlated yield forecast</h1><p>{escape(profile.name)} · generated {escape(generated)}</p></div></div></header>
 <main class="report-shell"><div class="notice"><b>Forecast scope.</b> Productive ATE samples were transformed with the approved Section 5 correlation factors and checked against the corresponding correlated limits. This is a deterministic forecast from the supplied samples—not a guarantee of future manufacturing yield.</div>
+{rejected_notice}
 <div class="overview-grid">{_metadata_table(metadata)}<div class="table-card"><h3>Review priority</h3><table class="metadata"><tbody>
 <tr><th>Tests requiring attention</th><td class="{'yield-fail' if affected_tests else 'yield-pass'}">{affected_tests:,}</td></tr>
 <tr><th>Failing samples</th><td class="{'yield-fail' if total_fails else 'yield-pass'}">{total_fails:,}</td></tr>

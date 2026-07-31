@@ -202,7 +202,11 @@ assigned in Section 1.
 
 For every productive row, CorreLaTE selects the approved Section 5 factor using its configured test set and all unpooled
 grouping conditions. Missing, ambiguous, stale, or duplicate factor matches stop the run rather than silently applying a
-different factor. Correlated productive values are calculated as follows:
+different factor. The adapter treats `Test Value` as the canonical raw measurement and also recognizes a configured alias
+such as `Test Values`. It resolves aliases per row, rejects conflicting numeric duplicates, and never converts missing
+measurements to zero. If a campaign contains both valid and blank/non-numeric test cells, only the unusable rows are skipped;
+their count is shown in the command result and HTML input-quality warning. A campaign with no usable measurements stops with
+file and candidate-column diagnostics. Correlated productive values are calculated as follows:
 
 - `Linear`: $CV_{forecast}=a\,ATE+b$
 - `Mean_Deltas` and `Median_Deltas`: $CV_{forecast}=ATE+b$
