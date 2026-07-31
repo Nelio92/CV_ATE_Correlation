@@ -7,7 +7,7 @@ import math
 import re
 import textwrap
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 
@@ -174,22 +174,46 @@ def _title_for_group(summary: pd.Series, profile: CorrelationProfile, sample_cou
     return unwrapped, "\n".join(textwrap.wrap(unwrapped, width=110, break_long_words=False))
 
 
-def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_folder: Path, dpi: int = 160) -> int:
+PlotFigureConsumer = Callable[[int, str, str, Any, pd.Series, pd.DataFrame, str], None]
+
+
+def _plot_file_base(
+    group_index: int,
+    sample_count: int,
+    unwrapped_title: str,
+    destination: Path,
+) -> str:
+    """Return a readable plot name that remains below the legacy Windows path limit."""
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", unwrapped_title).strip("_")
+    digest = hashlib.sha1(unwrapped_title.encode("utf-8")).hexdigest()[:10]
+    fixed_base = f"G{group_index:04d}_Samples_{sample_count}"
+    longest_suffix = "__models.png"
+    available_slug = max(
+        0,
+        240
+        - len(str(destination.resolve()))
+        - 1
+        - len(fixed_base)
+        - len(digest)
+        - len(longest_suffix)
+        - 2,
+    )
+    readable_slug = slug[:min(48, available_slug)]
+    return f"{fixed_base}_{readable_slug + '_' if readable_slug else ''}{digest}"
+
+
+def _render_plot_figures(
+    result: CorrelationResult,
+    profile: CorrelationProfile,
+    consume: PlotFigureConsumer,
+) -> int:
+    """Render each plot once and pass the live figure to a caller-provided consumer."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.patheffects as path_effects
     import matplotlib.transforms as transforms
-
-    output_folder.mkdir(parents=True, exist_ok=True)
-    folder_name = output_folder.resolve().name or "plots"
-    insertion_folders = {
-        "FE": output_folder / f"{folder_name}_FE",
-        "BE": output_folder / f"{folder_name}_BE",
-    }
-    for folder in insertion_folders.values():
-        folder.mkdir(parents=True, exist_ok=True)
 
     count = 0
     for group_index, details in result.details.groupby("GroupIndex", sort=True):
@@ -207,23 +231,7 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
         details = details.reset_index(drop=True)
         sample = pd.Series(range(len(details)), dtype="int64")
         unwrapped_title, title = _title_for_group(summary, profile, len(details))
-        slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", unwrapped_title).strip("_")
-        digest = hashlib.sha1(unwrapped_title.encode("utf-8")).hexdigest()[:10]
-        destination = insertion_folders[_insertion_bucket(summary, details)]
-        fixed_base = f"G{int(group_index):04d}_Samples_{len(details)}"
-        longest_suffix = "__models.png"
-        available_slug = max(
-            0,
-            240
-            - len(str(destination.resolve()))
-            - 1
-            - len(fixed_base)
-            - len(digest)
-            - len(longest_suffix)
-            - 2,
-        )
-        readable_slug = slug[:min(48, available_slug)]
-        base = f"{fixed_base}_{readable_slug + '_' if readable_slug else ''}{digest}"
+        insertion_bucket = _insertion_bucket(summary, details)
         unit = str(summary.get("Unit", "") or "").strip()
         value_label = f"Value [{unit}]" if unit else "Value"
         residual_label = f"Residual [{unit}]" if unit else "Residual"
@@ -360,8 +368,13 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
         )
         corrected_axis.legend(fontsize=9, framealpha=0.92)
         fig_series.tight_layout(rect=[0, 0, 1, 0.96])
-        fig_series.savefig(destination / f"{base}__series.png", dpi=dpi, bbox_inches="tight")
-        plt.close(fig_series)
+        try:
+            consume(
+                int(group_index), insertion_bucket, "series", fig_series,
+                summary, details, unwrapped_title,
+            )
+        finally:
+            plt.close(fig_series)
         count += 1
 
         # Figure B: CV-vs-ATE model view and residuals.
@@ -472,7 +485,39 @@ def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_f
         )
         residual_axis.legend(fontsize=9, framealpha=0.92)
         fig_models.tight_layout(rect=[0, 0, 1, 0.96])
-        fig_models.savefig(destination / f"{base}__models.png", dpi=dpi, bbox_inches="tight")
-        plt.close(fig_models)
+        try:
+            consume(
+                int(group_index), insertion_bucket, "models", fig_models,
+                summary, details, unwrapped_title,
+            )
+        finally:
+            plt.close(fig_models)
         count += 1
     return count
+
+
+def write_plots(result: CorrelationResult, profile: CorrelationProfile, output_folder: Path, dpi: int = 160) -> int:
+    """Write legacy individual PNG diagnostics; sign-off workflows should prefer the HTML report."""
+    output_folder.mkdir(parents=True, exist_ok=True)
+    folder_name = output_folder.resolve().name or "plots"
+    insertion_folders = {
+        "FE": output_folder / f"{folder_name}_FE",
+        "BE": output_folder / f"{folder_name}_BE",
+    }
+    for folder in insertion_folders.values():
+        folder.mkdir(parents=True, exist_ok=True)
+
+    def save_figure(
+        group_index: int,
+        insertion_bucket: str,
+        plot_kind: str,
+        figure: Any,
+        _summary: pd.Series,
+        details: pd.DataFrame,
+        unwrapped_title: str,
+    ) -> None:
+        destination = insertion_folders[insertion_bucket]
+        base = _plot_file_base(group_index, len(details), unwrapped_title, destination)
+        figure.savefig(destination / f"{base}__{plot_kind}.png", dpi=dpi, bbox_inches="tight")
+
+    return _render_plot_figures(result, profile, save_figure)

@@ -12,6 +12,7 @@ from .correlation import attach_covariate, attach_covariate_from_test_rows, corr
 from .excel import write_dataframe_workbook
 from .extraction import LegacyWideTeCsvAdapter
 from .handoff import import_measurement_results, create_measurement_request
+from .html_report import write_html_report
 from .profile_store import profile_store_path
 from .profiles_8188 import (
     CORRELATION_PROFILES,
@@ -39,7 +40,9 @@ def _build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--chip-manifest", required=True, type=Path)
     extract.add_argument("--output", required=True, type=Path)
 
-    correlate = subparsers.add_parser("correlate", help="Generate factors, guard-bands, details, and plots")
+    correlate = subparsers.add_parser(
+        "correlate", help="Generate factors, guard-bands, details, and an HTML sign-off report"
+    )
     correlate.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
     correlate.add_argument("--input", required=True, type=Path)
     correlate.add_argument("--sheet", required=True)
@@ -49,7 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     correlate.add_argument("--covariate-sheet", help="Legacy fallback lookup sheet")
     correlate.add_argument("--output", required=True, type=Path)
-    correlate.add_argument("--plots", type=Path)
+    correlate.add_argument(
+        "--html-report", type=Path,
+        help="Optional self-contained offline HTML report with embedded plots",
+    )
+    correlate.add_argument("--plots", type=Path, help=argparse.SUPPRESS)
 
     request = subparsers.add_parser("request", help="Generate an editable CV request and TE-only ATE manifest")
     request.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
@@ -132,8 +139,16 @@ def main(argv: list[str] | None = None) -> int:
             )
     result = correlate_frame(frame, profile)
     write_excel_report(result, profile, args.output)
-    plot_count = write_plots(result, profile, args.plots) if args.plots else 0
-    print(f"Wrote {len(result.summary)} groups and {plot_count} plots to {args.output}")
+    embedded_plot_count = (
+        write_html_report(result, profile, args.html_report) if args.html_report else 0
+    )
+    legacy_plot_count = write_plots(result, profile, args.plots) if args.plots else 0
+    message = f"Wrote {len(result.summary)} groups to {args.output}"
+    if args.html_report:
+        message += f" and {embedded_plot_count} embedded plots to {args.html_report}"
+    if args.plots:
+        message += f"; also wrote {legacy_plot_count} legacy PNG diagnostics to {args.plots}"
+    print(message)
     return 0
 
 

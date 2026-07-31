@@ -32,6 +32,7 @@ from cv_ate_correlation.handoff import (
     create_measurement_request,
     import_measurement_results,
 )
+from cv_ate_correlation.html_report import write_html_report
 from cv_ate_correlation.models import (
     DEFAULT_COORDINATE_FALLBACK,
     normalize_correlation_strategy,
@@ -52,7 +53,7 @@ from cv_ate_correlation.profiles_8188 import (
     get_extraction_profile,
     refresh_profiles,
 )
-from cv_ate_correlation.reporting import write_excel_report, write_plots
+from cv_ate_correlation.reporting import write_excel_report
 
 
 Action = Callable[[], str]
@@ -77,7 +78,10 @@ def about_information() -> tuple[tuple[str, str], ...]:
         ("Interface", "Five-step desktop workflow and command-line interface using one shared engine"),
         ("Correlation models", "Linear (OLS), Mean_Deltas, Median_Deltas, and Physics-based with automatic Kf"),
         ("Guard-band policies", "distribution_sigma and Max_residuals"),
-        ("Reports", "Focused factors and guard bands, complete diagnostics, row-level data, and PNG plots"),
+        (
+            "Reports",
+            "Focused Excel factors and guard bands, complete row-level data, and a self-contained HTML sign-off report",
+        ),
         (
             "Visual identity",
             "Signal Bloom — blue ATE and green Lab petals converge around a golden fitted path. "
@@ -694,7 +698,7 @@ class CorrelationDesktopApp:
             guidance,
             text=(
                 "Profiles → Extract ATE and Kf → Create the Lab/CV request → Validate and align returned results → "
-                "Generate factors, guard bands, reports, and model plots. Measurement processing is local. "
+                "Generate factors, guard bands, Excel data, and an offline HTML sign-off report. Measurement processing is local. "
                 "The Lab/CV request omits ATE values, limits, and internal Kf; keep the separate ATE manifest on the TE side."
             ),
             style="Hint.TLabel",
@@ -858,6 +862,16 @@ class CorrelationDesktopApp:
             title=title,
             defaultextension=".xlsx",
             filetypes=[("Excel workbooks", "*.xlsx")],
+        )
+        if value:
+            variable.set(value)
+
+    def _choose_save_html(self, variable: tk.StringVar, title: str) -> None:
+        value = filedialog.asksaveasfilename(
+            parent=self.root,
+            title=title,
+            defaultextension=".html",
+            filetypes=[("HTML reports", "*.html")],
         )
         if value:
             variable.set(value)
@@ -2055,15 +2069,15 @@ class CorrelationDesktopApp:
     def _build_correlation_tab(self) -> None:
         form = self._make_tab(
             "5 · Correlate",
-            "Generate factors, guard-bands, report, and plots",
+            "Generate factors, guard-bands, Excel data, and an HTML sign-off report",
             "INPUT: the aligned correlation workbook. Kf is extracted from raw data in Step 2 and retained internally "
-            "through Steps 3–4. OUTPUT: a formatted Excel report and optional plot folder.",
+            "through Steps 3–4. OUTPUT: a formatted Excel report and optional self-contained HTML review artifact.",
         )
         profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
         source = tk.StringVar()
         sheet = tk.StringVar()
         report = tk.StringVar()
-        plots = tk.StringVar()
+        html_report = tk.StringVar()
         covariate_hint = tk.StringVar()
         self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
         sheet_combo = self._add_combo(form, 2, "Input sheet", sheet, ())
@@ -2090,11 +2104,10 @@ class CorrelationDesktopApp:
         self._add_path(
             form,
             5,
-            "Plots folder (optional)",
-            plots,
-            lambda: self._choose_folder(plots, "Select plot output folder"),
+            "HTML sign-off report (optional)",
+            html_report,
+            lambda: self._choose_save_html(html_report, "Save HTML sign-off report"),
             direction="output",
-            button_text="Select…",
         )
 
         def update_covariate_state(*_args: object) -> None:
@@ -2114,7 +2127,7 @@ class CorrelationDesktopApp:
                 "input workbook": source.get(),
                 "input sheet": sheet.get(),
                 "report workbook": report.get(),
-                "plots folder": plots.get(),
+                "HTML report": html_report.get(),
             }
             if not self._validate_required(**{
                 key: values[key]
@@ -2134,13 +2147,18 @@ class CorrelationDesktopApp:
                 result = correlate_frame(frame, selected)
                 destination = Path(values["report workbook"])
                 write_excel_report(result, selected, destination)
-                plot_count = 0
-                if values["plots folder"].strip():
-                    plot_count = write_plots(result, selected, Path(values["plots folder"]))
-                return (
-                    f"Generated {len(result.summary):,} correlation groups and "
-                    f"{plot_count:,} plots in {destination}."
-                )
+                embedded_plot_count = 0
+                html_destination = values["HTML report"].strip()
+                if html_destination:
+                    embedded_plot_count = write_html_report(
+                        result, selected, Path(html_destination)
+                    )
+                message = f"Generated {len(result.summary):,} correlation groups in {destination}"
+                if html_destination:
+                    message += (
+                        f" and {embedded_plot_count:,} embedded plots in {html_destination}"
+                    )
+                return message + "."
 
             self._start_job(run_button, "Calculating correlations and generating outputs…", action)
 

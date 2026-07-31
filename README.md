@@ -7,8 +7,8 @@
 
 CorreLaTE is a profile-driven Python application for extracting ATE data, creating a controlled Lab/CV measurement
 handoff, validating returned measurements, fitting ATE-to-Lab correlation models, calculating guard bands, and generating
-focused Excel reports and diagnostic plots. The same engine is available through a five-step Tkinter desktop workflow and
-a command-line interface.
+focused Excel reports and a self-contained HTML sign-off report. The same engine is available through a five-step Tkinter
+desktop workflow and a command-line interface.
 
 This repository also retains the original CTRX8188 analysis scripts that were migrated from
 `Tasks_Automation_Code/IFX_Scripts/8188_CV_ATE_Correlation` with their history. They remain useful as traceable legacy
@@ -25,7 +25,7 @@ recommended implementation for new workflows.
 | Interfaces | Five-step desktop GUI and `cv-ate-correlation` CLI using one shared engine |
 | Correlation models | Linear OLS, `Mean_Deltas`, `Median_Deltas`, and Physics-based with automatic Kf |
 | Guard-band policies | `distribution_sigma` and `Max_residuals` |
-| Reports | Focused factors and guard bands, all-model diagnostics, row-level data, and per-group PNG plots |
+| Reports | Focused Excel factors and guard bands, all-model diagnostics, row-level data, and an offline self-contained HTML sign-off report |
 | Visual identity | **Signal Bloom** — blue ATE and green Lab petals converge around a golden fitted path. The bloom represents scattered measurements becoming one coherent correlated result, while the white points emphasize transparent, traceable data. |
 
 An elegant **About** button occupies the free upper-right area of the desktop header. It opens a compact information dialog
@@ -51,7 +51,8 @@ At a high level, the current CorreLaTE workflow is:
 2. Stream and extract relevant ATE raw data, including automatic Kf test `52046` attachment when configured.
 3. Generate a Lab/CV request and a separate internal ATE manifest, then validate and align the returned measurements.
 4. Calculate all four model diagnostics while applying the strategy and guard-band policy selected for each test set.
-5. Review focused factors and new limits, full row-level diagnostics, and two auto-fitted PNG figures per group.
+5. Review focused factors and new limits in Excel, then use the self-contained HTML report for test-by-test sign-off with
+    embedded model and series plots aligned across insertions.
 
 ![Illustrative Correlation Plot](docs/images/illustrative-correlation-plot.svg)
 
@@ -137,7 +138,7 @@ cv-ate-correlation correlate `
     --input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
     --sheet FE_Filtered `
     --output Data/Outputs/DPLL_Correlation_New.xlsx `
-    --plots Data/Outputs/DPLL_Plots_New
+    --html-report Data/Outputs/DPLL_Correlation_Signoff.html
 ```
 
 Kf-assisted profiles use the Kf column embedded during raw extraction; no separate lookup workbook is required:
@@ -148,7 +149,7 @@ cv-ate-correlation correlate `
     --input Data/TXPA_Correlation_Input.xlsx `
     --sheet Correlation_Input `
     --output Data/Outputs/TXPA_Correlation_New.xlsx `
-    --plots Data/Outputs/TXPA_Plots_New
+    --html-report Data/Outputs/TXPA_Correlation_Signoff.html
 ```
 
 Each report contains:
@@ -163,6 +164,15 @@ their single correlation factor, while Linear and Physics-based strategies repor
 light-green bold highlight. `Guard_Bands` likewise reports only the selected policy's method and newly calculated limits;
 its method and populated new-limit cells use the same highlight. Full all-model diagnostics and original inputs remain
 available in `Correlation_Summary` and `Correlated_Data`.
+
+The optional HTML output is the primary human-review and sign-off artifact. It is one offline file with embedded styling,
+Signal Bloom branding, and compressed plot images—there is no companion plot folder and no network dependency. Its opening
+summary records the profile, applied strategies and guard-band policies, affected tests, population and sample counts,
+grouping corners, available models, pooling, Kf configuration, and invalid limit-window count. Each following section covers
+one affected test or one explicitly marked merged/pooled test family. It prints every contributing test number and name,
+then two focused tables for factors and correlated limits by insertion, followed by model plots and series plots aligned
+horizontally across insertions. Sections are searchable and collapsible, and plots can be enlarged for review meetings.
+The Excel workbook remains the numerical authority for complete diagnostics and row-level values.
 
 ### Desktop GUI
 
@@ -180,7 +190,8 @@ wordmark and is also used as the application window icon. The desktop interface 
     raw-data folder; custom profiles use the files assigned to their insertions.
 3. `Create CV Request` — generate the editable CV workbook and separate internal ATE manifest.
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
-5. `Correlate` — generate the Excel report and optional PNG plots using the Kf retained in the aligned input.
+5. `Correlate` — generate the Excel report and optional self-contained HTML sign-off report using the Kf retained in the
+    aligned input.
 
 The upper-right `About` button opens a focused dialog with the application version, author, supported models and guard-band
 policies, report outputs, expanded Signal Bloom meaning, workflow summary, and safe TE/Lab handoff guidance. Keeping About
@@ -249,6 +260,43 @@ means that an offset-only model is unsuitable for that group, not that its mean 
 Physics-based results are shown when the automatically extracted Kf data has enough numeric variation; selecting
 Physics-based as the primary strategy requires complete Kf coverage.
 
+#### Why production Linear remains OLS instead of Deming regression
+
+The production `Linear` strategy intentionally uses ordinary least squares (OLS). OLS treats ATE as the predictor and
+minimizes the vertical CV/Lab prediction error
+
+$$
+\sum_i\left(CV_i-(a\,ATE_i+b)\right)^2.
+$$
+
+That objective matches CorreLaTE's operational use: predict the Lab/CV value from an observed ATE value and quantify the
+resulting vertical residual used by correlation diagnostics and guard-banding.
+
+Deming regression is an errors-in-variables method. It is appropriate when both ATE and Lab/CV measurements have known
+measurement uncertainty, and it minimizes an error-weighted orthogonal distance rather than vertical prediction error. Its
+fit requires a defensible error-variance ratio
+
+$$
+\lambda=\frac{\operatorname{Var}(\text{Lab/CV measurement error})}
+                                    {\operatorname{Var}(\text{ATE measurement error})}.
+$$
+
+Setting $\lambda=1$ assumes equal error variances; it does not estimate them. The evaluated 39,600-row production-aligned
+campaign contains 450 populations of 88 samples but only one observation per measurement request (`Repeat_Index=1`), so
+$\lambda$ cannot be estimated from those data. Equal-variance Deming was therefore evaluated only as a sensitivity study:
+
+- OLS produced lower or equal vertical RMSE in all 450 populations, which is expected from the OLS objective.
+- 384 of 450 populations had $|r|<0.7$; in these weakly associated populations equal-variance Deming frequently produced
+    unstable and sometimes extreme slopes.
+- In the 66 populations with $|r|\ge0.7$, the median maximum OLS-to-Deming prediction difference was only 0.0772 measurement
+    units and the median Deming/OLS vertical-RMSE ratio was 1.014.
+- In the 35 populations with $|r|\ge0.9$, the median maximum prediction difference fell to 0.0469 measurement units.
+
+Consequently, Deming does **not** replace OLS and is not exposed as a production strategy or guard-band input. It can remain
+an isolated sensitivity analysis for method-comparison studies. Production adoption would first require repeatability or
+metrology data for both systems, a justified value of $\lambda$, and acceptance criteria demonstrating an improvement for
+the intended prediction task. Equal-variance Deming results must always be labeled as an unverified $\lambda=1$ assumption.
+
 ### Automatic Kf input for the Physics-based model
 
 Automatic Physics/Kf is enabled by default for custom profiles. Step 2 identifies and joins Kf directly from the assigned
@@ -282,14 +330,14 @@ insertion, and temperature. All eight test numbers receive the same correlation 
 and guard-band sheets show `MERGED`, the pooled parameter names, every merged value, and value counts; plot titles show the
 merged values and `Samples=88`. Different test sets can pool different parameters without combining rows across sets.
 
-Each correlation group produces two 12×9 PNG files: `__series.png` contains raw and all correlated series with the new
-policy limits, while
-`__models.png` contains the CV-vs-ATE model comparison and all model residuals. The selected plot folder contains sibling
-`<folder-name>_FE` and `<folder-name>_BE` subfolders, and plots are dispatched using insertion type/name. Plot annotations
-include sample counts, mean/median/max deltas, residual deviations, R² values, physics α/β, invalid limit-window warnings,
-and DoE segment labels when available. The correlated-series subplot omits original test-limit and base-requirement lines
-and legend entries; its vertical range is calculated from all model predictions and the applicable new limits so the model
-traces remain visible.
+Each correlation population produces two embedded figures in the HTML report. The series figure contains raw and all
+correlated series with the new policy limits; the models figure contains the CV-vs-ATE model comparison and all model
+residuals. Figures are rendered directly in memory and embedded as compressed data URIs, so normal sign-off generation does
+not leave individual PNG files or FE/BE plot folders behind. Within a test-family section, equivalent correlation conditions
+form one review row and all insertion plots stay on that same horizontal row. Plot annotations include sample counts,
+mean/median/max deltas, residual deviations, R² values, physics α/β, invalid limit-window warnings, and DoE segment labels
+when available. The correlated-series subplot omits original test-limit and base-requirement lines and legend entries; its
+vertical range is calculated from all model predictions and the applicable new limits so the model traces remain visible.
 
 Every enabled grouping condition defines a separate factor/guard-band population. Device identifiers such as `DUT Nr`
 normally belong in **Detail key columns**, not **Grouping conditions**, unless a separate correlation factor per DUT is
@@ -347,7 +395,8 @@ The current suite validates:
 - DPLL Linear/mean-delta factors, shifted limits, and worst-case guard-bands
 - TXLO/TXPA Median_Deltas factors, residuals, corrected limits, and special requirement policies
 - Kf-assisted coefficients, fit metrics, residuals, and limits
-- four-model calculations, requirement-based Max_residuals limits, two-figure plots, and FE/BE plot dispatch
+- four-model calculations, requirement-based Max_residuals limits, direct in-memory figure rendering, and the offline HTML
+    test-family/insertion sign-off structure
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script
 
