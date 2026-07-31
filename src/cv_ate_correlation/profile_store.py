@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from copy import deepcopy
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,6 +45,7 @@ BASE_OUTPUT_COLUMNS = (
     "Temperature",
 )
 _PROFILE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{2,63}$")
+_REQUIREMENT_GUARD_BANDS = {"max_residuals", "mean_deltas"}
 
 
 def profile_store_path() -> Path:
@@ -218,12 +220,14 @@ def _parse_test_policies(spec: Mapping[str, Any]) -> tuple[TestSelector, tuple[T
             raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
         requirement_min: float | None = None
         requirement_max: float | None = None
-        if guard_kind == "Max_residuals":
+        if guard_kind in _REQUIREMENT_GUARD_BANDS:
             try:
                 requirement_min = float(raw_set.get("requirement_min", ""))
                 requirement_max = float(raw_set.get("requirement_max", ""))
             except (TypeError, ValueError) as error:
-                raise ValueError(f"Test set '{name}' needs numeric REQ_MIN and REQ_MAX values") from error
+                raise ValueError(
+                    f"Test set '{name}' needs numeric REQ_MIN and REQ_MAX values for {guard_kind}"
+                ) from error
             if not math.isfinite(requirement_min) or not math.isfinite(requirement_max):
                 raise ValueError(f"Test set '{name}' REQ_MIN and REQ_MAX must be finite")
             if requirement_min >= requirement_max:
@@ -459,8 +463,27 @@ def save_custom_profile_spec(profile_id: str, spec: Mapping[str, Any], path: Pat
     if profile_id in builtin_profile_ids():
         raise ValueError(f"Built-in profile '{profile_id}' is read-only; choose a different profile ID")
     profile_spec_to_models(profile_id, spec)
+    canonical_spec = deepcopy(dict(spec))
+    if "guard_band_kind" in canonical_spec:
+        canonical_spec["guard_band_kind"] = normalize_guard_band_kind(
+            str(canonical_spec["guard_band_kind"]), migrate_legacy_shifted=True
+        )
+    raw_sets = canonical_spec.get("test_sets")
+    if isinstance(raw_sets, list):
+        canonical_sets: list[Any] = []
+        for raw_set in raw_sets:
+            if not isinstance(raw_set, dict):
+                canonical_sets.append(raw_set)
+                continue
+            canonical_set = dict(raw_set)
+            canonical_set["guard_band_kind"] = normalize_guard_band_kind(
+                str(canonical_set.get("guard_band_kind", "distribution_sigma")),
+                migrate_legacy_shifted=True,
+            )
+            canonical_sets.append(canonical_set)
+        canonical_spec["test_sets"] = canonical_sets
     specs = load_custom_profile_specs(destination)
-    specs[profile_id] = dict(spec)
+    specs[profile_id] = canonical_spec
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     temporary.write_text(

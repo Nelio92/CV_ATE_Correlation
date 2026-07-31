@@ -13,6 +13,12 @@ from .excel import write_dataframe_workbook
 from .extraction import LegacyWideTeCsvAdapter
 from .handoff import import_measurement_results, create_measurement_request
 from .html_report import write_html_report
+from .outliers import (
+    DEFAULT_MAD_THRESHOLD,
+    analyze_outliers,
+    attach_outlier_audit,
+    finalize_outlier_review,
+)
 from .profile_store import profile_store_path
 from .profiles_8188 import (
     CORRELATION_PROFILES,
@@ -52,6 +58,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     correlate.add_argument("--covariate-sheet", help="Legacy fallback lookup sheet")
     correlate.add_argument("--output", required=True, type=Path)
+    correlate.add_argument(
+        "--mad-threshold",
+        type=float,
+        default=DEFAULT_MAD_THRESHOLD,
+        help="Scaled-MAD outlier review threshold (default: 6); detection never excludes rows automatically",
+    )
+    correlate.add_argument(
+        "--exclude-outlier-row",
+        type=int,
+        action="append",
+        default=[],
+        metavar="ROW_ID",
+        help="Explicit OutlierRowId to exclude after review; repeat for multiple rows",
+    )
     correlate.add_argument(
         "--html-report", type=Path,
         help="Optional self-contained offline HTML report with embedded plots",
@@ -137,13 +157,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"Input is missing embedded covariate column '{profile.covariate.output_name}'. "
                 f"Rerun raw extraction with this profile so Kf test {profile.covariate.test_number} is attached."
             )
-    result = correlate_frame(frame, profile)
+    analysis = analyze_outliers(frame, profile, args.mad_threshold)
+    frame, outlier_review = finalize_outlier_review(
+        analysis,
+        profile,
+        args.exclude_outlier_row,
+    )
+    result = attach_outlier_audit(correlate_frame(frame, profile), profile, outlier_review)
     write_excel_report(result, profile, args.output)
     embedded_plot_count = (
         write_html_report(result, profile, args.html_report) if args.html_report else 0
     )
     legacy_plot_count = write_plots(result, profile, args.plots) if args.plots else 0
     message = f"Wrote {len(result.summary)} groups to {args.output}"
+    message += (
+        f"; outlier review flagged {outlier_review.flagged_count} and explicitly excluded "
+        f"{outlier_review.excluded_count} raw sample(s)"
+    )
     if args.html_report:
         message += f" and {embedded_plot_count} embedded plots to {args.html_report}"
     if args.plots:

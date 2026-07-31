@@ -604,7 +604,7 @@ def test_max_residuals_tightens_configured_requirement_limits() -> None:
         minimum_points=5,
         lower_limit_column="low",
         upper_limit_column="high",
-        guard_band=GuardBandProfile(kind="Max_residuals", requirement_min=2.0, requirement_max=18.0),
+        guard_band=GuardBandProfile(kind="max_residuals", requirement_min=2.0, requirement_max=18.0),
     )
 
     summary = correlate_frame(frame, profile).summary.iloc[0]
@@ -616,7 +616,37 @@ def test_max_residuals_tightens_configured_requirement_limits() -> None:
     assert summary["OriginalUpperLimit"] == pytest.approx(20.0)
     assert summary["AdjustedLowerLimit"] == pytest.approx(9.0)
     assert summary["AdjustedUpperLimit"] == pytest.approx(11.0)
+    assert summary["GuardBandPolicy"] == "max_residuals"
     assert not summary["LimitWindowInvalid"]
+
+
+def test_mean_deltas_guard_band_tightens_requirements_by_absolute_raw_mean_delta() -> None:
+    frame = pd.DataFrame({
+        "group": ["A"] * 5,
+        "reference": [2, 3, 4, 5, 6],
+        "ate": [1, 1, 3, 3, 5],
+    })
+    profile = CorrelationProfile(
+        name="mean delta limits",
+        strategy="Linear",
+        reference_column="reference",
+        candidate_column="ate",
+        group_by=("group",),
+        minimum_points=5,
+        guard_band=GuardBandProfile(
+            kind="mean_deltas",
+            requirement_min=0.0,
+            requirement_max=10.0,
+        ),
+    )
+
+    summary = correlate_frame(frame, profile).summary.iloc[0]
+
+    assert summary["MeanDelta"] == pytest.approx(1.4)
+    assert summary["AdjustedLowerLimit"] == pytest.approx(1.4)
+    assert summary["AdjustedUpperLimit"] == pytest.approx(8.6)
+    assert summary["GuardBandPolicy"] == "mean_deltas"
+    assert summary["GuardBandMethod"] == "REQ_MIN/REQ_MAX tightened by absolute mean(CV-ATE) delta"
 
 
 def test_physics_primary_rejects_constant_kf_with_actionable_message() -> None:

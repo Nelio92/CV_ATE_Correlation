@@ -133,7 +133,7 @@ def add_deming_comparison(
             )
         details.loc[group.index, "DemingCorrectedCandidate"] = prediction
         details.loc[group.index, "DemingResidual"] = residual
-    return CorrelationResult(summary, details)
+    return CorrelationResult(summary, details, result.outlier_review)
 
 
 def write_deming_comparison_report(result: CorrelationResult, output: Path) -> None:

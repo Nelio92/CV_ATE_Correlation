@@ -177,7 +177,7 @@ def test_profile_supports_multiple_test_specific_policies(tmp_path) -> None:
     assert extraction.selector.matches(999, "LeakageCurrent hot")
     assert [policy.name for policy in correlation.test_policies] == ["Phase noise", "Leakage"]
     assert correlation.test_policies[0].strategy == "Mean_Deltas"
-    assert correlation.test_policies[0].guard_band.kind == "Max_residuals"
+    assert correlation.test_policies[0].guard_band.kind == "max_residuals"
     assert correlation.test_policies[0].guard_band.requirement_min == 8
     assert correlation.test_policies[0].guard_band.requirement_max == 16
     assert correlation.test_policies[0].pooled_columns == ("Test Number",)
@@ -209,6 +209,42 @@ def test_custom_profiles_round_trip_through_json_store(tmp_path) -> None:
     assert delete_custom_profile("my-current", path)
     assert load_custom_profile_specs(path) == {}
     assert not delete_custom_profile("my-current", path)
+
+
+def test_guard_band_persistence_migrates_legacy_casing_and_supports_mean_deltas(tmp_path) -> None:
+    path = tmp_path / "profiles.json"
+    spec = custom_spec()
+    spec["test_sets"] = [
+        {
+            "name": "Legacy residuals",
+            "tests": "101",
+            "strategy": "Linear",
+            "guard_band_kind": "Max_residuals",
+            "sigma_multiplier": 6,
+            "requirement_min": 0,
+            "requirement_max": 10,
+        },
+        {
+            "name": "Bias limits",
+            "tests": "200-202, LeakageCurrent",
+            "strategy": "Median_Deltas",
+            "guard_band_kind": "mean_deltas",
+            "sigma_multiplier": 6,
+            "requirement_min": 1,
+            "requirement_max": 9,
+        },
+    ]
+
+    save_custom_profile_spec("my-current", spec, path)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    saved_sets = payload["profiles"]["my-current"]["test_sets"]
+    assert [item["guard_band_kind"] for item in saved_sets] == ["max_residuals", "mean_deltas"]
+    _extraction, profiles = load_custom_profiles(path)
+    assert [policy.guard_band.kind for policy in profiles["my-current"].test_policies] == [
+        "max_residuals",
+        "mean_deltas",
+    ]
 
 
 def test_custom_profile_is_merged_into_runtime_registries(tmp_path, monkeypatch) -> None:
@@ -280,7 +316,7 @@ def test_physics_based_test_set_requires_automatic_kf_and_uses_defaults() -> Non
     spec["physics_kf_enabled"] = "Enabled"
     _extraction, correlation = profile_spec_to_models("my-current", spec)
     assert correlation.test_policies[0].strategy == "Physics-based"
-    assert correlation.test_policies[0].guard_band.kind == "Max_residuals"
+    assert correlation.test_policies[0].guard_band.kind == "max_residuals"
     assert correlation.covariate is not None
     assert correlation.covariate.value_column == "Test Value"
     assert correlation.covariate.merge_keys == ("DUT Nr", "Temperature", "Insertion")

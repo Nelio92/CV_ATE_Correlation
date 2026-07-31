@@ -46,6 +46,8 @@ def _display_value(value: Any) -> str:
     if isinstance(value, int):
         return f"{value:,}"
     if isinstance(value, float):
+        if math.isinf(value):
+            return "∞"
         if not math.isfinite(value):
             return "—"
         if value.is_integer() and abs(value) < 1e12:
@@ -226,6 +228,9 @@ def _factor_rows(
         row.update({
             "CorrelationStrategy": strategy,
             "Count": source.get("Count"),
+            "OriginalCount": source.get("OriginalCount"),
+            "OutlierFlaggedCount": source.get("OutlierFlaggedCount"),
+            "OutlierExcludedCount": source.get("OutlierExcludedCount"),
             "CorrelationFactor": (
                 source.get("CorrelationFactor")
                 if strategy in {"Mean_Deltas", "Median_Deltas"} else None
@@ -249,6 +254,13 @@ def _factor_rows(
         ("CorrelationStrategy", "Strategy"),
         ("Count", "Samples"),
     ]
+    for key, label in (
+        ("OriginalCount", "Original samples"),
+        ("OutlierFlaggedCount", "Flagged"),
+        ("OutlierExcludedCount", "Excluded"),
+    ):
+        if any(not _is_missing(row.get(key)) for row in rows):
+            columns.append((key, label))
     for key, label in (
         ("CorrelationFactor", "Factor / offset"),
         ("CorrelationFactorA", "Factor A (slope / α)"),
@@ -393,6 +405,47 @@ def _metadata_table(rows: Sequence[tuple[str, str]]) -> str:
         for label, value in rows
     )
     return f'<div class="table-card"><h3>Profile and analysis</h3><table class="metadata"><tbody>{body}</tbody></table></div>'
+
+
+def _outlier_review_html(review: Any) -> str:
+    audit = review.audit_frame()
+    preferred = (
+        "ReviewStatus",
+        "OutlierInputRow",
+        "TestSet",
+        "Test Number",
+        "Test Name",
+        "DUT Nr",
+        "Wafer",
+        "WAFER",
+        "X",
+        "Y",
+        "DoE split",
+        "Insertion Type",
+        "Insertion",
+        "Temperature",
+        "OutlierFlaggedSeries",
+        "OutlierMaxRobustScore",
+        "LabValue",
+        "LabRobustScore",
+        "ATEValue",
+        "ATERobustScore",
+        "PairedMetric",
+        "PairedValue",
+        "PairedRobustScore",
+        "OutlierReviewGuidance",
+        "OutlierReason",
+        "Excluded",
+    )
+    columns = [column for column in preferred if column in audit.columns]
+    rows = [{column: value for column, value in row.items()} for row in audit.to_dict("records")]
+    labels = [(column, column.replace("Outlier", "Outlier ")) for column in columns]
+    return _table_html(
+        "Flagged-sample audit",
+        rows,
+        labels,
+        table_class="outlier-table",
+    )
 
 
 def _condition_groups(
@@ -605,7 +658,7 @@ def write_html_report(
         else "Not configured"
     )
     generated = datetime.now().astimezone().isoformat(timespec="seconds")
-    overview_rows = (
+    overview_rows = [
         ("Correlation profile", profile.name),
         ("Generated", generated),
         ("Reference / Lab column", profile.reference_column),
@@ -631,7 +684,19 @@ def write_html_report(
         ("Merged / pooled parameters", "; ".join(pooled) or "None"),
         ("Physics/Kf source", covariate),
         ("Invalid correlated limit windows", f"{invalid_windows:,}"),
-    )
+    ]
+    if result.outlier_review is not None:
+        review = result.outlier_review
+        overview_rows.extend((
+            ("Outlier detector", f"scaled MAD (1.4826 × MAD), n={review.threshold:g}"),
+            ("Outlier filtering mode", "Explicit review only; no automatic exclusions"),
+            ("Outlier samples flagged", f"{review.flagged_count:,}"),
+            ("Flagged samples retained", f"{review.retained_flagged_count:,}"),
+            ("Flagged samples excluded", f"{review.excluded_count:,}"),
+            ("Rows before / after review", f"{review.original_row_count:,} / {review.final_row_count:,}"),
+        ))
+    else:
+        overview_rows.append(("Outlier review", "Not attached to this result"))
 
     family_sections: list[str] = []
     family_index_items: list[str] = []
@@ -721,6 +786,7 @@ def write_html_report(
 <div class="notice"><b>Sign-off scope.</b> This self-contained report is the human-review artifact. The companion Excel report remains the numerical authority for complete summary and row-level data. Images and styling are embedded; no network connection or external plot folder is required.</div>
 <h2>High-level correlation information</h2>
 <div class="overview-grid">{_metadata_table(overview_rows)}{_overview_dimensions(details, profile)}</div>
+{('<h2>Pre-correlation outlier review</h2>' + _outlier_review_html(result.outlier_review)) if result.outlier_review is not None else ''}
 <h2>Test-family review</h2>
 <div class="controls"><input id="family-search" type="search" placeholder="Filter by test number, test name, test set, strategy, or policy…" aria-label="Filter test families"><button id="expand-all" type="button">Expand visible</button><button id="collapse-all" type="button">Collapse all</button><span><b id="visible-count">{len(families)}</b> / {len(families)} families</span></div>
 <ol class="family-index">{''.join(family_index_items)}</ol>

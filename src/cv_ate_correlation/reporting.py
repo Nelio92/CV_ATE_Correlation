@@ -114,10 +114,19 @@ def write_excel_report(result: CorrelationResult, profile: CorrelationProfile, o
         guards.to_excel(writer, index=False, sheet_name="Guard_Bands")
         _test_name_after_test_number(summary).to_excel(writer, index=False, sheet_name="Correlation_Summary")
         _test_name_after_test_number(details).to_excel(writer, index=False, sheet_name="Correlated_Data")
-    format_workbook(output, highlighted_columns={
+        if result.outlier_review is not None:
+            result.outlier_review.audit_frame().to_excel(
+                writer,
+                index=False,
+                sheet_name="Outlier_Review",
+            )
+    highlighted_columns = {
         "Correlation_Factors": factor_columns,
         "Guard_Bands": guard_interest_columns,
-    })
+    }
+    if result.outlier_review is not None:
+        highlighted_columns["Outlier_Review"] = ["ReviewStatus", "Excluded"]
+    format_workbook(output, highlighted_columns=highlighted_columns)
 
 
 def _finite_values(values: Iterable[Any]) -> list[float]:

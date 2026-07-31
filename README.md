@@ -24,7 +24,7 @@ recommended implementation for new workflows.
 | Author | **Wandji Lionel Wilfried (ES RF D RAD PTE TE4)** |
 | Interfaces | Five-step desktop GUI and `cv-ate-correlation` CLI using one shared engine |
 | Correlation models | Linear OLS, `Mean_Deltas`, `Median_Deltas`, and Physics-based with automatic Kf |
-| Guard-band policies | `distribution_sigma` and `Max_residuals` |
+| Guard-band policies | `distribution_sigma`, `max_residuals`, and `mean_deltas` |
 | Reports | Focused Excel factors and guard bands, all-model diagnostics, row-level data, and an offline self-contained HTML sign-off report |
 | Visual identity | **Signal Bloom** — blue ATE and green Lab petals converge around a golden fitted path. The bloom represents scattered measurements becoming one coherent correlated result, while the white points emphasize transparent, traceable data. |
 
@@ -137,6 +137,7 @@ cv-ate-correlation correlate `
     --profile ctrx8188-dpll `
     --input Data/TE_Data_Extraction/ATE_Extracted_DPLL_PN_Data.xlsx `
     --sheet FE_Filtered `
+    --mad-threshold 6 `
     --output Data/Outputs/DPLL_Correlation_New.xlsx `
     --html-report Data/Outputs/DPLL_Correlation_Signoff.html
 ```
@@ -158,6 +159,7 @@ Each report contains:
 - `Guard_Bands`
 - `Correlation_Summary`
 - `Correlated_Data`
+- `Outlier_Review` when the pre-correlation review is attached
 
 `Correlation_Factors` is intentionally focused on the selected strategy for each test set: offset strategies report only
 their single correlation factor, while Linear and Physics-based strategies report only factors A/B. The factor cells use a
@@ -190,8 +192,8 @@ wordmark and is also used as the application window icon. The desktop interface 
     raw-data folder; custom profiles use the files assigned to their insertions.
 3. `Create CV Request` — generate the editable CV workbook and separate internal ATE manifest.
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
-5. `Correlate` — generate the Excel report and optional self-contained HTML sign-off report using the Kf retained in the
-    aligned input.
+5. `Correlate` — review configurable scaled-MAD findings before fitting, optionally exclude explicitly selected rows,
+    then generate the Excel report and optional self-contained HTML sign-off report using the Kf retained in the aligned input.
 
 The upper-right `About` button opens a focused dialog with the application version, author, supported models and guard-band
 policies, report outputs, expanded Signal Bloom meaning, workflow summary, and safe TE/Lab handoff guidance. Keeping About
@@ -219,7 +221,8 @@ The profile editor is subsystem-neutral. A user can define:
 - additional user-defined grouping conditions created with the `Add…` button
 - Lab/reference and ATE/candidate columns and minimum points per group
 - limit, unit, and detail-key columns
-- distribution-sigma or `Max_residuals` guard-band behavior, with per-test-set `REQ_MIN` and `REQ_MAX` inputs
+- `distribution_sigma`, `max_residuals`, or `mean_deltas` guard-band behavior, with per-test-set `REQ_MIN` and `REQ_MAX`
+    inputs for both inward requirement-limit policies
 - automatic Physics/Kf extraction, with editable raw value column, merge keys, output name, and Kf test number
     (default `52046`)
 
@@ -252,7 +255,54 @@ selectors:
 - `Median_Deltas`: $CV_{pred}=ATE+\operatorname{median}(CV-ATE)$
 - `Physics-based`: $CV_{pred}=ATE-(\alpha K_f+\beta)$, fitted from $ATE-CV=\alpha K_f+\beta$
 - `distribution_sigma`: $limits=\operatorname{mean}(ATE_{corrected})\pm k\sigma(ATE_{corrected})$
-- `Max_residuals`: $LTL_{new}=REQ_{MIN}+|r|_{max}$ and $UTL_{new}=REQ_{MAX}-|r|_{max}$
+- `max_residuals`: $LTL_{new}=REQ_{MIN}+|r|_{max}$ and $UTL_{new}=REQ_{MAX}-|r|_{max}$
+- `mean_deltas`: $LTL_{new}=REQ_{MIN}+|\overline{CV-ATE}|$ and
+    $UTL_{new}=REQ_{MAX}-|\overline{CV-ATE}|$
+
+`max_residuals` is the canonical spelling used by the GUI, newly saved profiles, Excel, and HTML. Existing profile files
+using `Max_residuals` remain readable and are normalized to lowercase. The `mean_deltas` guard-band is distinct from the
+`Mean_Deltas` correlation strategy: it uses the absolute raw average CV-minus-ATE bias as a symmetric inward requirement
+margin regardless of the selected primary correlation model. It is therefore a bias-based tightening policy and is less
+conservative than protecting against the largest observed post-correction residual.
+
+#### Pre-correlation outlier review
+
+Step 5 performs an auditable outlier review before any production model is fitted. The editable threshold defaults to
+$n=6$ and uses the normal-consistency-scaled median absolute deviation:
+
+$$
+MAD=\operatorname{median}\left(|x_i-\operatorname{median}(x)|\right),\qquad
+s_{MAD}=1.4826\,MAD,
+$$
+
+$$
+\frac{|x_i-\operatorname{median}(x)|}{s_{MAD}}>n.
+$$
+
+Detection runs independently within every unpooled test/corner population so legitimate shifts between tests,
+insertions, temperatures, supply corners, channels, or other enabled dimensions are not compared globally. CorreLaTE
+reviews three signals independently:
+
+1. the raw Lab/CV series;
+2. the raw ATE/TE series;
+3. the paired disagreement—robust preliminary residuals for Linear and Physics-based strategies, or the centered
+   $CV-ATE$ delta for offset strategies.
+
+The paired signal distinguishes a DUT that is extreme on both systems but still follows the correlation from a genuinely
+discordant pair. When $MAD=0$, constant values are not flagged; any non-median deviation is shown with an infinite robust
+score and an explicit `MAD=0` review status rather than silently divided by zero.
+
+The review window always reports whether findings exist and, when present, lists the count, test number/name, DUT and wafer
+coordinates, DoE split, insertion, temperature, enabled corners, measured values, robust scores, and reasons. A statistical
+flag is a review candidate—not proof that a sample is invalid. **Filtering is disabled by default**, no row is preselected,
+and continuing with all data preserves every sample. To filter, the user must first enable manual exclusions for that run,
+select each finding explicitly, and confirm it. CorreLaTE blocks a selection that would reduce any previously valid
+correlation population below the configured minimum sample count.
+
+The aligned input is never modified. Retained flagged rows remain marked in `Correlated_Data`; every finding and its final
+retained/excluded decision is written to `Outlier_Review`; group summaries record original, flagged, excluded, and final
+counts; and the HTML overview includes detector settings and the complete audit. The CLI follows the same safe default and
+accepts repeated `--exclude-outlier-row ROW_ID` arguments only for explicit, traceable exclusions after a review run.
 
 All four model predictions and residuals are calculated for comparison. `Mean_Deltas` and `Median_Deltas` are intentionally
 offset-only models with fixed slope 1; unlike OLS, they do not rotate to follow the point cloud. A low or negative R² therefore
@@ -395,7 +445,8 @@ The current suite validates:
 - DPLL Linear/mean-delta factors, shifted limits, and worst-case guard-bands
 - TXLO/TXPA Median_Deltas factors, residuals, corrected limits, and special requirement policies
 - Kf-assisted coefficients, fit metrics, residuals, and limits
-- four-model calculations, requirement-based Max_residuals limits, direct in-memory figure rendering, and the offline HTML
+- four-model calculations, requirement-based `max_residuals` and `mean_deltas` limits, scaled-MAD outlier review/auditing,
+    direct in-memory figure rendering, and the offline HTML
     test-family/insertion sign-off structure
 - DPLL, Kf, TXLO, and combined TXPA raw extraction against the committed 8188 workbooks
 - direct DPLL parity against a freshly executed legacy extraction script

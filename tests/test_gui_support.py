@@ -131,8 +131,11 @@ def test_test_sets_expose_equations_and_support_independent_policies() -> None:
     assert "median(CV − ATE)" in CORRELATION_STRATEGY_EXPLANATIONS["Median_Deltas"]
     assert "alpha × Kf + beta" in CORRELATION_STRATEGY_EXPLANATIONS["Physics-based"]
     assert "± k × σ" in GUARD_BAND_EXPLANATIONS["distribution_sigma"]
-    assert tuple(GUARD_BAND_EXPLANATIONS) == ("distribution_sigma", "Max_residuals")
-    assert "REQ_MIN + |max residual|" in GUARD_BAND_EXPLANATIONS["Max_residuals"]
+    assert tuple(GUARD_BAND_EXPLANATIONS) == (
+        "distribution_sigma", "max_residuals", "mean_deltas",
+    )
+    assert "REQ_MIN + |max residual|" in GUARD_BAND_EXPLANATIONS["max_residuals"]
+    assert "|mean(CV − ATE)|" in GUARD_BAND_EXPLANATIONS["mean_deltas"]
 
     migrated = load_test_set_definitions({
         "tests": "101",
@@ -144,7 +147,7 @@ def test_test_sets_expose_equations_and_support_independent_policies() -> None:
     })
     assert migrated[0]["tests"] == "101"
     assert migrated[0]["strategy"] == "Mean_Deltas"
-    assert migrated[0]["guard_band_kind"] == "Max_residuals"
+    assert migrated[0]["guard_band_kind"] == "max_residuals"
 
     validated = validate_test_set_definitions([
         {
@@ -167,7 +170,7 @@ def test_test_sets_expose_equations_and_support_independent_policies() -> None:
     ])
     assert [item["name"] for item in validated] == ["Noise", "Power"]
     assert validated[0]["strategy"] == "Mean_Deltas"
-    assert validated[0]["guard_band_kind"] == "Max_residuals"
+    assert validated[0]["guard_band_kind"] == "max_residuals"
     assert validated[0]["requirement_min"] == 8.0
     assert validated[0]["requirement_max"] == 16.0
     assert validated[1]["strategy"] == "Median_Deltas"

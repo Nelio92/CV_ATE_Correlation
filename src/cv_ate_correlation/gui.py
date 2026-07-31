@@ -38,6 +38,19 @@ from cv_ate_correlation.models import (
     normalize_correlation_strategy,
     normalize_guard_band_kind,
 )
+from cv_ate_correlation.outliers import (
+    DEFAULT_MAD_THRESHOLD,
+    OUTLIER_FLAGGED_SERIES,
+    OUTLIER_INPUT_ROW,
+    OUTLIER_MAX_SCORE,
+    OUTLIER_REASON,
+    OUTLIER_ROW_ID,
+    OutlierAnalysis,
+    OutlierReview,
+    analyze_outliers,
+    attach_outlier_audit,
+    finalize_outlier_review,
+)
 from cv_ate_correlation.profile_store import (
     delete_custom_profile,
     load_custom_profile_specs,
@@ -56,7 +69,8 @@ from cv_ate_correlation.profiles_8188 import (
 from cv_ate_correlation.reporting import write_excel_report
 
 
-Action = Callable[[], str]
+Action = Callable[[], Any]
+SuccessHandler = Callable[[Any], None]
 APPLICATION_TITLE = "CorreLaTE: ATE-to-Lab Correlation"
 APPLICATION_AUTHOR = __author__
 APPLICATION_VERSION = __version__
@@ -77,7 +91,11 @@ def about_information() -> tuple[tuple[str, str], ...]:
         ("Author", APPLICATION_AUTHOR),
         ("Interface", "Five-step desktop workflow and command-line interface using one shared engine"),
         ("Correlation models", "Linear (OLS), Mean_Deltas, Median_Deltas, and Physics-based with automatic Kf"),
-        ("Guard-band policies", "distribution_sigma and Max_residuals"),
+        ("Guard-band policies", "distribution_sigma, max_residuals, and mean_deltas"),
+        (
+            "Outlier handling",
+            "Pre-fit scaled-MAD review (default n=6); findings are retained unless the user explicitly enables and selects exclusions",
+        ),
         (
             "Reports",
             "Focused Excel factors and guard bands, complete row-level data, and a self-contained HTML sign-off report",
@@ -147,7 +165,8 @@ CORRELATION_STRATEGY_EXPLANATIONS = {
 }
 GUARD_BAND_EXPLANATIONS = {
     "distribution_sigma": "limits = mean(corrected ATE) ± k × σ(corrected ATE)",
-    "Max_residuals": "new LTL = REQ_MIN + |max residual|; new UTL = REQ_MAX − |max residual|",
+    "max_residuals": "new LTL = REQ_MIN + |max residual|; new UTL = REQ_MAX − |max residual|",
+    "mean_deltas": "new LTL = REQ_MIN + |mean(CV − ATE)|; new UTL = REQ_MAX − |mean(CV − ATE)|",
 }
 
 
@@ -355,7 +374,7 @@ def validate_test_set_definitions(definitions: list[Mapping[str, Any]]) -> list[
             raise ValueError(f"Test set '{name}' sigma multiplier must be positive")
         requirement_min: float | str = ""
         requirement_max: float | str = ""
-        if guard_kind == "Max_residuals":
+        if guard_kind in {"max_residuals", "mean_deltas"}:
             try:
                 requirement_min = float(str(definition.get("requirement_min", "")).strip())
                 requirement_max = float(str(definition.get("requirement_max", "")).strip())
@@ -596,8 +615,9 @@ class CorrelationDesktopApp:
         self.progress = ttk.Progressbar(status_frame, mode="indeterminate", length=210)
         self.progress.grid(row=0, column=1, sticky="e")
 
-        self._job_results: queue.Queue[tuple[bool, str]] = queue.Queue()
+        self._job_results: queue.Queue[tuple[bool, Any]] = queue.Queue()
         self._active_button: ttk.Button | None = None
+        self._active_success_handler: SuccessHandler | None = None
         self._extraction_profile_combos: list[ttk.Combobox] = []
         self._correlation_profile_combos: list[ttk.Combobox] = []
 
@@ -881,7 +901,14 @@ class CorrelationDesktopApp:
         if value:
             variable.set(value)
 
-    def _start_job(self, button: ttk.Button, description: str, action: Action) -> None:
+    def _start_job(
+        self,
+        button: ttk.Button,
+        description: str,
+        action: Action,
+        *,
+        on_success: SuccessHandler | None = None,
+    ) -> None:
         if self._active_button is not None:
             messagebox.showwarning(
                 "Operation in progress",
@@ -890,6 +917,7 @@ class CorrelationDesktopApp:
             )
             return
         self._active_button = button
+        self._active_success_handler = on_success
         button.state(["disabled"])
         self.status.set(description)
         self.progress.start(12)
@@ -914,11 +942,282 @@ class CorrelationDesktopApp:
         self.progress.stop()
         self._active_button.state(["!disabled"])
         self._active_button = None
-        self.status.set(text if success else "Operation failed")
+        handler = self._active_success_handler
+        self._active_success_handler = None
+        self.status.set(str(text) if success and handler is None else "Ready" if success else "Operation failed")
         if success:
-            messagebox.showinfo("Complete", text, parent=self.root)
+            if handler is not None:
+                try:
+                    handler(text)
+                except Exception as error:
+                    self.status.set("Operation failed")
+                    messagebox.showerror(
+                        "Operation failed",
+                        f"{type(error).__name__}: {error}",
+                        parent=self.root,
+                    )
+            else:
+                messagebox.showinfo("Complete", str(text), parent=self.root)
         else:
-            messagebox.showerror("Operation failed", text, parent=self.root)
+            messagebox.showerror("Operation failed", str(text), parent=self.root)
+
+    def _show_outlier_review_dialog(
+        self,
+        analysis: OutlierAnalysis,
+        profile: Any,
+        *,
+        allow_filtering: bool,
+    ) -> tuple[pd.DataFrame, OutlierReview] | None:
+        """Show detector results and return only exclusions explicitly approved by the user."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("CorreLaTE · Pre-correlation outlier review")
+        dialog.transient(self.root)
+        dialog.geometry("1160x690")
+        dialog.minsize(820, 500)
+        if self._window_icon is not None:
+            try:
+                dialog.iconphoto(True, self._window_icon)
+            except tk.TclError:
+                pass
+
+        result: tuple[pd.DataFrame, OutlierReview] | None = None
+        selected_exclusions: set[int] = set()
+        content = ttk.Frame(dialog, padding=18)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(3, weight=1)
+
+        identity = ttk.Frame(content)
+        identity.grid(row=0, column=0, sticky="ew")
+        if self._header_logo is not None:
+            ttk.Label(identity, image=self._header_logo).grid(
+                row=0, column=0, rowspan=3, padx=(0, 14), sticky="nw"
+            )
+        ttk.Label(identity, text="Pre-correlation outlier review", style="Heading.TLabel").grid(
+            row=0, column=1, sticky="w"
+        )
+        ttk.Label(
+            identity,
+            text=(
+                f"Scaled MAD: |x − median(x)| / (1.4826 × MAD) > {analysis.threshold:g}. "
+                "Detection is per unpooled test and corner; Lab/CV, ATE/TE, and paired-model signals are reviewed independently."
+            ),
+            style="Hint.TLabel",
+            wraplength=920,
+        ).grid(row=1, column=1, pady=(4, 0), sticky="w")
+        ttk.Label(
+            identity,
+            text=(
+                "A statistical flag is a review candidate, not proof of bad data. Original rows are never modified. "
+                "Exclusion requires an explicit selection and is recorded in Excel and HTML outputs."
+            ),
+            style="Hint.TLabel",
+            wraplength=920,
+        ).grid(row=2, column=1, pady=(4, 0), sticky="w")
+
+        findings = analysis.findings
+        test_summary = "None"
+        if not findings.empty:
+            identities: list[str] = []
+            number_column = findings.get("Test Number", pd.Series("", index=findings.index))
+            name_column_name = profile.test_name_column or "Test Name"
+            name_column = findings.get(name_column_name, pd.Series("", index=findings.index))
+            for number, name in zip(number_column, name_column):
+                text = f"{number:g}" if isinstance(number, float) and number.is_integer() else str(number)
+                if str(name).strip() and str(name).strip().casefold() != "nan":
+                    text += f" · {str(name).strip()}"
+                if text not in identities:
+                    identities.append(text)
+            test_summary = "; ".join(identities[:8])
+            if len(identities) > 8:
+                test_summary += f"; +{len(identities) - 8} more"
+        summary_frame = ttk.LabelFrame(content, text="Detection summary", padding=10)
+        summary_frame.grid(row=1, column=0, pady=(14, 10), sticky="ew")
+        summary_frame.columnconfigure(1, weight=1)
+        summary_rows = (
+            ("Flagged raw samples", f"{analysis.flagged_count:,}"),
+            ("Affected tests", f"{analysis.affected_test_count:,}"),
+            ("Affected unpooled populations", f"{analysis.affected_population_count:,}"),
+            ("Valid Lab/CV–ATE pairs reviewed", f"{analysis.valid_pair_count:,}"),
+            ("Tests", test_summary),
+        )
+        for row, (label, value) in enumerate(summary_rows):
+            ttk.Label(summary_frame, text=label, font=("Segoe UI", 9, "bold")).grid(
+                row=row, column=0, padx=(0, 14), pady=2, sticky="nw"
+            )
+            ttk.Label(summary_frame, text=value, wraplength=850, justify="left").grid(
+                row=row, column=1, pady=2, sticky="nw"
+            )
+
+        filtering_state = ttk.Frame(content)
+        filtering_state.grid(row=2, column=0, pady=(0, 8), sticky="ew")
+        filtering_message = (
+            "Manual filtering is enabled for this run. No rows are selected by default."
+            if allow_filtering
+            else "Filtering is disabled (default). Continue to correlate with every raw sample retained."
+        )
+        ttk.Label(
+            filtering_state,
+            text=filtering_message,
+            foreground="#2E7D32" if allow_filtering else "#555555",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left")
+
+        tree: ttk.Treeview | None = None
+        tree_row_ids: dict[str, int] = {}
+        if findings.empty:
+            empty = ttk.LabelFrame(content, text="Review result", padding=24)
+            empty.grid(row=3, column=0, sticky="nsew")
+            ttk.Label(
+                empty,
+                text="No outliers were detected in the Lab/CV, ATE/TE, or paired-model series.",
+                font=("Segoe UI", 12, "bold"),
+                foreground="#2E7D32",
+                wraplength=800,
+            ).pack(expand=True)
+        else:
+            table = ttk.Frame(content)
+            table.grid(row=3, column=0, sticky="nsew")
+            table.rowconfigure(0, weight=1)
+            table.columnconfigure(0, weight=1)
+            name_column = profile.test_name_column or "Test Name"
+            preferred_columns = (
+                OUTLIER_INPUT_ROW,
+                "TestSet",
+                "Test Number",
+                name_column,
+                "DUT Nr",
+                "Wafer",
+                "WAFER",
+                "X",
+                "Y",
+                "DoE split",
+                "Insertion Type",
+                "Insertion",
+                "Temperature",
+                *profile.group_by,
+                OUTLIER_FLAGGED_SERIES,
+                OUTLIER_MAX_SCORE,
+                "LabValue",
+                "LabRobustScore",
+                "ATEValue",
+                "ATERobustScore",
+                "PairedMetric",
+                "PairedValue",
+                "PairedRobustScore",
+                "OutlierReviewGuidance",
+                OUTLIER_REASON,
+            )
+            display_columns = tuple(
+                column for column in dict.fromkeys(preferred_columns) if column in findings.columns
+            )
+            tree_columns = ("Exclude", *display_columns)
+            tree = ttk.Treeview(
+                table,
+                columns=tree_columns,
+                show="headings",
+                selectmode="extended",
+            )
+            vertical = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+            horizontal = ttk.Scrollbar(table, orient="horizontal", command=tree.xview)
+            tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            tree.grid(row=0, column=0, sticky="nsew")
+            vertical.grid(row=0, column=1, sticky="ns")
+            horizontal.grid(row=1, column=0, sticky="ew")
+            for column in tree_columns:
+                heading = {
+                    "Exclude": "Exclude?",
+                    OUTLIER_INPUT_ROW: "Input row",
+                    OUTLIER_FLAGGED_SERIES: "Flagged signal(s)",
+                    OUTLIER_MAX_SCORE: "Max robust score",
+                }.get(column, column)
+                tree.heading(column, text=heading)
+                width = 85 if column in {"Exclude", OUTLIER_INPUT_ROW, "X", "Y"} else 150
+                if column in {OUTLIER_REASON, "OutlierReviewGuidance", name_column, "OutlierPopulation"}:
+                    width = 300
+                tree.column(column, width=width, minwidth=65, stretch=False)
+
+            def display_cell(value: Any) -> str:
+                try:
+                    if pd.isna(value):
+                        return ""
+                except (TypeError, ValueError):
+                    pass
+                if isinstance(value, float):
+                    if math.isinf(value):
+                        return "∞"
+                    return f"{value:.6g}"
+                return str(value)
+
+            for _index, finding in findings.iterrows():
+                row_id = int(finding[OUTLIER_ROW_ID])
+                item = f"outlier-{row_id}"
+                values = ["No", *(display_cell(finding[column]) for column in display_columns)]
+                tree.insert("", "end", iid=item, values=values)
+                tree_row_ids[item] = row_id
+
+        actions = ttk.Frame(content)
+        actions.grid(row=4, column=0, pady=(14, 0), sticky="ew")
+        selection_text = tk.StringVar(value="0 rows selected for exclusion")
+        ttk.Label(actions, textvariable=selection_text, style="Hint.TLabel").pack(side="left")
+
+        def refresh_selection_display() -> None:
+            selection_text.set(f"{len(selected_exclusions):,} row(s) selected for exclusion")
+
+        def toggle_rows(_event: object | None = None) -> None:
+            if not allow_filtering or tree is None:
+                return
+            for item in tree.selection():
+                row_id = tree_row_ids[item]
+                values = list(tree.item(item, "values"))
+                if row_id in selected_exclusions:
+                    selected_exclusions.remove(row_id)
+                    values[0] = "No"
+                else:
+                    selected_exclusions.add(row_id)
+                    values[0] = "Yes"
+                tree.item(item, values=values)
+            refresh_selection_display()
+
+        toggle_button = ttk.Button(actions, text="Toggle selected row(s)", command=toggle_rows)
+        toggle_button.pack(side="left", padx=(12, 0))
+        if not allow_filtering or tree is None:
+            toggle_button.state(["disabled"])
+        if tree is not None:
+            tree.bind("<Double-1>", toggle_rows)
+
+        def finish(exclusions: set[int]) -> None:
+            nonlocal result
+            try:
+                result = finalize_outlier_review(analysis, profile, exclusions)
+            except ValueError as error:
+                messagebox.showerror("Invalid outlier exclusions", str(error), parent=dialog)
+                return
+            dialog.destroy()
+
+        def apply_selected() -> None:
+            if not selected_exclusions:
+                messagebox.showinfo(
+                    "No exclusions selected",
+                    "Select at least one flagged row, or use Continue with all data.",
+                    parent=dialog,
+                )
+                return
+            finish(set(selected_exclusions))
+
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        apply_button = ttk.Button(actions, text="Apply selected exclusions", command=apply_selected)
+        apply_button.pack(side="right", padx=(8, 0))
+        if not allow_filtering or findings.empty:
+            apply_button.state(["disabled"])
+        ttk.Button(actions, text="Continue with all data", command=lambda: finish(set())).pack(
+            side="right", padx=(8, 0)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.grab_set()
+        dialog.wait_window()
+        return result
 
     def _build_profile_tab(self) -> None:
         outer = ttk.Frame(self.notebook, padding=18)
@@ -1286,7 +1585,7 @@ class CorrelationDesktopApp:
         requirement_min_entry.grid(row=6, column=1, padx=(0, 8), pady=4, sticky="ew")
         ttk.Label(
             test_set_frame,
-            text="Required by Max_residuals; base lower requirement before adding max |residual|.",
+            text="Required by max_residuals and mean_deltas; base lower requirement before inward tightening.",
             style="Hint.TLabel",
             wraplength=390,
         ).grid(row=6, column=2, sticky="w")
@@ -1296,7 +1595,7 @@ class CorrelationDesktopApp:
         requirement_max_entry.grid(row=7, column=1, padx=(0, 8), pady=4, sticky="ew")
         ttk.Label(
             test_set_frame,
-            text="Required by Max_residuals; base upper requirement before subtracting max |residual|.",
+            text="Required by max_residuals and mean_deltas; base upper requirement before inward tightening.",
             style="Hint.TLabel",
             wraplength=390,
         ).grid(row=7, column=2, sticky="w")
@@ -1321,7 +1620,11 @@ class CorrelationDesktopApp:
             sigma_entry.configure(
                 state="normal" if test_set_guard_band.get() == "distribution_sigma" else "disabled"
             )
-            requirement_state = "normal" if test_set_guard_band.get() == "Max_residuals" else "disabled"
+            requirement_state = (
+                "normal"
+                if test_set_guard_band.get() in {"max_residuals", "mean_deltas"}
+                else "disabled"
+            )
             requirement_min_entry.configure(state=requirement_state)
             requirement_max_entry.configure(state=requirement_state)
 
@@ -2079,6 +2382,8 @@ class CorrelationDesktopApp:
         report = tk.StringVar()
         html_report = tk.StringVar()
         covariate_hint = tk.StringVar()
+        mad_threshold = tk.StringVar(value=f"{DEFAULT_MAD_THRESHOLD:g}")
+        allow_outlier_filtering = tk.BooleanVar(value=False)
         self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
         sheet_combo = self._add_combo(form, 2, "Input sheet", sheet, ())
         self._add_path(
@@ -2093,9 +2398,27 @@ class CorrelationDesktopApp:
         ttk.Label(form, textvariable=covariate_hint, style="Hint.TLabel", wraplength=720).grid(
             row=3, column=1, columnspan=2, pady=7, sticky="w"
         )
+        self._add_label(form, 4, "Outlier threshold (n × scaled MAD)")
+        ttk.Entry(form, textvariable=mad_threshold).grid(
+            row=4, column=1, padx=(0, 8), pady=7, sticky="ew"
+        )
+        ttk.Label(
+            form,
+            text=(
+                "Pre-fit review threshold using |x−median| / (1.4826×MAD) > n. Default: 6. "
+                "Detection is applied separately to each unpooled test/corner population."
+            ),
+            style="Hint.TLabel",
+            wraplength=420,
+        ).grid(row=4, column=2, pady=7, sticky="w")
+        ttk.Checkbutton(
+            form,
+            text="Allow manual exclusion of selected flagged rows (disabled by default)",
+            variable=allow_outlier_filtering,
+        ).grid(row=5, column=1, columnspan=2, pady=7, sticky="w")
         self._add_path(
             form,
-            4,
+            6,
             "Excel report",
             report,
             lambda: self._choose_save(report, "Save correlation report"),
@@ -2103,7 +2426,7 @@ class CorrelationDesktopApp:
         )
         self._add_path(
             form,
-            5,
+            7,
             "HTML sign-off report (optional)",
             html_report,
             lambda: self._choose_save_html(html_report, "Save HTML sign-off report"),
@@ -2128,6 +2451,7 @@ class CorrelationDesktopApp:
                 "input sheet": sheet.get(),
                 "report workbook": report.get(),
                 "HTML report": html_report.get(),
+                "MAD threshold": mad_threshold.get(),
             }
             if not self._validate_required(**{
                 key: values[key]
@@ -2135,8 +2459,24 @@ class CorrelationDesktopApp:
             }):
                 return
             selected = get_correlation_profile(values["profile"])
+            try:
+                selected_threshold = float(values["MAD threshold"])
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid MAD threshold",
+                    "Outlier threshold must be numeric.",
+                    parent=self.root,
+                )
+                return
+            if not math.isfinite(selected_threshold) or selected_threshold <= 0:
+                messagebox.showerror(
+                    "Invalid MAD threshold",
+                    "Outlier threshold must be a finite number greater than zero.",
+                    parent=self.root,
+                )
+                return
 
-            def action() -> str:
+            def analyze_action() -> tuple[pd.DataFrame, OutlierAnalysis]:
                 frame = pd.read_excel(Path(values["input workbook"]), sheet_name=values["input sheet"])
                 if selected.covariate and selected.covariate.output_name not in frame.columns:
                     raise ValueError(
@@ -2144,26 +2484,57 @@ class CorrelationDesktopApp:
                         f"Rerun Step 2 with this profile so raw test {selected.covariate.test_number} is extracted, "
                         "then repeat Steps 3 and 4."
                     )
-                result = correlate_frame(frame, selected)
-                destination = Path(values["report workbook"])
-                write_excel_report(result, selected, destination)
-                embedded_plot_count = 0
-                html_destination = values["HTML report"].strip()
-                if html_destination:
-                    embedded_plot_count = write_html_report(
-                        result, selected, Path(html_destination)
-                    )
-                message = f"Generated {len(result.summary):,} correlation groups in {destination}"
-                if html_destination:
-                    message += (
-                        f" and {embedded_plot_count:,} embedded plots in {html_destination}"
-                    )
-                return message + "."
+                return frame, analyze_outliers(frame, selected, selected_threshold)
 
-            self._start_job(run_button, "Calculating correlations and generating outputs…", action)
+            def review_ready(payload: Any) -> None:
+                _frame, analysis = payload
+                reviewed = self._show_outlier_review_dialog(
+                    analysis,
+                    selected,
+                    allow_filtering=allow_outlier_filtering.get(),
+                )
+                if reviewed is None:
+                    self.status.set("Correlation cancelled during outlier review")
+                    return
+                filtered_frame, review = reviewed
+
+                def report_action() -> str:
+                    result = correlate_frame(filtered_frame, selected)
+                    result = attach_outlier_audit(result, selected, review)
+                    destination = Path(values["report workbook"])
+                    write_excel_report(result, selected, destination)
+                    embedded_plot_count = 0
+                    html_destination = values["HTML report"].strip()
+                    if html_destination:
+                        embedded_plot_count = write_html_report(
+                            result, selected, Path(html_destination)
+                        )
+                    message = (
+                        f"Generated {len(result.summary):,} correlation groups in {destination}; "
+                        f"outlier review flagged {review.flagged_count:,} and excluded "
+                        f"{review.excluded_count:,} raw sample(s)"
+                    )
+                    if html_destination:
+                        message += (
+                            f" and embedded {embedded_plot_count:,} plots in {html_destination}"
+                        )
+                    return message + "."
+
+                self._start_job(
+                    run_button,
+                    "Calculating reviewed correlations and generating outputs…",
+                    report_action,
+                )
+
+            self._start_job(
+                run_button,
+                "Checking Lab/CV, ATE/TE, and paired series for outliers…",
+                analyze_action,
+                on_success=review_ready,
+            )
 
         run_button = ttk.Button(form, text="Generate report", command=run)
-        run_button.grid(row=6, column=1, pady=(18, 0), sticky="e")
+        run_button.grid(row=8, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_covariate_state)
         update_covariate_state()
 

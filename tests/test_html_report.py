@@ -149,5 +149,9 @@ def test_correlate_cli_exposes_html_report_and_hides_legacy_plot_folder() -> Non
     ])
 
     assert args.html_report == Path("signoff.html")
+    assert args.mad_threshold == 6.0
+    assert args.exclude_outlier_row == []
     assert "--html-report" in correlate_help
+    assert "--mad-threshold" in correlate_help
+    assert "--exclude-outlier-row" in correlate_help
     assert "--plots" not in correlate_help

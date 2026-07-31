@@ -42,6 +42,16 @@ def _rule_limits(
     return lower, upper, rule.method
 
 
+def _require_requirement_limits(profile: GuardBandProfile, policy_name: str) -> tuple[float, float]:
+    if profile.requirement_min is None or profile.requirement_max is None:
+        raise ValueError(f"{policy_name} requires numeric REQ_MIN and REQ_MAX profile inputs")
+    if not math.isfinite(profile.requirement_min) or not math.isfinite(profile.requirement_max):
+        raise ValueError(f"{policy_name} REQ_MIN and REQ_MAX must be finite numbers")
+    if profile.requirement_min >= profile.requirement_max:
+        raise ValueError(f"{policy_name} requires REQ_MIN to be smaller than REQ_MAX")
+    return profile.requirement_min, profile.requirement_max
+
+
 def compute_guard_band(
     profile: GuardBandProfile,
     frame: pd.DataFrame,
@@ -51,6 +61,7 @@ def compute_guard_band(
     correlation_factor: float,
     lower_limit: float | None,
     upper_limit: float | None,
+    mean_delta: float | None = None,
 ) -> dict[str, Any]:
     corrected = pd.to_numeric(corrected, errors="coerce").dropna()
     residual = pd.to_numeric(residual, errors="coerce").dropna()
@@ -85,16 +96,11 @@ def compute_guard_band(
         result["GuardBandMethod"] = "shifted upper limit with worst-case residual"
         return result
 
-    if kind == "Max_residuals":
-        if profile.requirement_min is None or profile.requirement_max is None:
-            raise ValueError("Max_residuals requires numeric REQ_MIN and REQ_MAX profile inputs")
-        if not math.isfinite(profile.requirement_min) or not math.isfinite(profile.requirement_max):
-            raise ValueError("Max_residuals REQ_MIN and REQ_MAX must be finite numbers")
-        if profile.requirement_min >= profile.requirement_max:
-            raise ValueError("Max_residuals requires REQ_MIN to be smaller than REQ_MAX")
+    if kind == "max_residuals":
+        requirement_min, requirement_max = _require_requirement_limits(profile, kind)
         if not math.isnan(max_abs_residual):
-            result["AdjustedLowerLimit"] = profile.requirement_min + abs(max_abs_residual)
-            result["AdjustedUpperLimit"] = profile.requirement_max - abs(max_abs_residual)
+            result["AdjustedLowerLimit"] = requirement_min + max_abs_residual
+            result["AdjustedUpperLimit"] = requirement_max - max_abs_residual
         adjusted_lower = result["AdjustedLowerLimit"]
         adjusted_upper = result["AdjustedUpperLimit"]
         result["LimitWindowInvalid"] = (
@@ -103,6 +109,22 @@ def compute_guard_band(
             and adjusted_lower > adjusted_upper
         )
         result["GuardBandMethod"] = "REQ_MIN/REQ_MAX tightened by max absolute residual"
+        return result
+
+    if kind == "mean_deltas":
+        requirement_min, requirement_max = _require_requirement_limits(profile, kind)
+        mean_delta_magnitude = abs(float(mean_delta)) if mean_delta is not None else math.nan
+        if math.isfinite(mean_delta_magnitude):
+            result["AdjustedLowerLimit"] = requirement_min + mean_delta_magnitude
+            result["AdjustedUpperLimit"] = requirement_max - mean_delta_magnitude
+        adjusted_lower = result["AdjustedLowerLimit"]
+        adjusted_upper = result["AdjustedUpperLimit"]
+        result["LimitWindowInvalid"] = (
+            not math.isnan(adjusted_lower)
+            and not math.isnan(adjusted_upper)
+            and adjusted_lower > adjusted_upper
+        )
+        result["GuardBandMethod"] = "REQ_MIN/REQ_MAX tightened by absolute mean(CV-ATE) delta"
         return result
 
     for rule in profile.rules:

@@ -18,8 +18,9 @@ CorrelationStrategy: TypeAlias = Literal[
 ]
 GuardBandKind: TypeAlias = Literal[
     "distribution_sigma",
-    "Max_residuals",
     "max_residuals",
+    "mean_deltas",
+    "Max_residuals",
     "shifted_upper_limit",
 ]
 
@@ -48,13 +49,14 @@ def normalize_guard_band_kind(
     value: str,
     *,
     migrate_legacy_shifted: bool = False,
-) -> Literal["distribution_sigma", "Max_residuals", "shifted_upper_limit"]:
+) -> Literal["distribution_sigma", "max_residuals", "mean_deltas", "shifted_upper_limit"]:
     """Return a canonical policy name and optionally migrate old custom profiles."""
     normalized = str(value).strip().casefold()
     aliases = {
         "distribution_sigma": "distribution_sigma",
-        "max_residuals": "Max_residuals",
-        "shifted_upper_limit": "Max_residuals" if migrate_legacy_shifted else "shifted_upper_limit",
+        "max_residuals": "max_residuals",
+        "mean_deltas": "mean_deltas",
+        "shifted_upper_limit": "max_residuals" if migrate_legacy_shifted else "shifted_upper_limit",
     }
     try:
         return aliases[normalized]  # type: ignore[return-value]

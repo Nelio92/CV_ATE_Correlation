@@ -48,6 +48,8 @@ def test_about_information_uses_package_identity_and_documents_capabilities() ->
     assert "Physics-based" in information["Correlation models"]
     assert "automatic Kf" in information["Correlation models"]
     assert "self-contained HTML sign-off report" in information["Reports"]
+    assert "scaled-MAD" in information["Outlier handling"]
+    assert "explicitly enables and selects exclusions" in information["Outlier handling"]
     assert "Custom profile store" not in information
     assert "Signal Bloom" in information["Visual identity"]
     assert "blue ATE" in information["Visual identity"]

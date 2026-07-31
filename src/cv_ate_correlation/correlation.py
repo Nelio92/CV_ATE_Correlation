@@ -23,6 +23,7 @@ from .guardbands import compute_guard_band
 class CorrelationResult:
     summary: pd.DataFrame
     details: pd.DataFrame
+    outlier_review: Any | None = None
 
 
 def _to_numeric(series: pd.Series) -> pd.Series:
@@ -452,7 +453,15 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
                 if pooled_columns else _first_numeric(group, profile.upper_limit_column)
             )
             guard = compute_guard_band(
-                guard_band, group, group_values, corrected, residual, factor, lower_limit, upper_limit
+                guard_band,
+                group,
+                group_values,
+                corrected,
+                residual,
+                factor,
+                lower_limit,
+                upper_limit,
+                mean_delta=mean_delta,
             )
             unit = ""
             if profile.unit_column and profile.unit_column in group.columns:
@@ -512,7 +521,7 @@ def correlate_frame(frame: pd.DataFrame, profile: CorrelationProfile) -> Correla
                 physics_guard = compute_guard_band(
                     profile.covariate_guard_band or guard_band,
                     group, group_values, physics_corrected, physics_residual,
-                    factor, lower_limit, upper_limit,
+                    factor, lower_limit, upper_limit, mean_delta=mean_delta,
                 )
                 present = int(covariate.notna().sum())
                 row.update({
