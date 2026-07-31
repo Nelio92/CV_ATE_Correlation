@@ -54,9 +54,11 @@ def test_packaging_files_reference_the_windowed_launcher_and_assets() -> None:
     assert '"cv_ate_correlation/assets"' in spec
     assert "--smoke-test" in build
     assert 'Replace("{{VERSION}}", $applicationVersion)' in build
+    assert 'CorreLaTE_Chips_Manifest.xlsx' in build
     assert 'Join-Path $scriptRoot ".venv/Scripts/python.exe"' in build
     assert '[project.gui-scripts]' in configuration
     assert 'correlate = "cv_ate_correlation.exe_entry:main"' in configuration
     assert '"Pillow>=10"' in configuration
+    assert '"assets/*.xlsx"' in configuration
     assert "./build_correlate_exe.ps1 -Clean" in workflow
     assert "release_packages/**/*" in workflow

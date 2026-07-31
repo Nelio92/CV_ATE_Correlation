@@ -23,6 +23,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cv_ate_correlation import __author__, __version__
+from cv_ate_correlation.chip_manifest import (
+    CHIP_MANIFEST_FILENAME,
+    save_chip_manifest_template,
+)
 from cv_ate_correlation.correlation import attach_covariate_from_test_rows, correlate_frame
 from cv_ate_correlation.excel import write_dataframe_workbook
 from cv_ate_correlation.extraction import LegacyWideTeCsvAdapter
@@ -2147,7 +2151,8 @@ class CorrelationDesktopApp:
         form = self._make_tab(
             "2 · Extract TE",
             "Extract normalized ATE measurements",
-            "INPUT: raw TE data and chip manifest. OUTPUT: a new formatted workbook containing Extracted_Data.",
+            "INPUT: raw TE data and a chip manifest with mandatory DUT Nr, Wafer, X, Y, and DoE split. "
+            "OUTPUT: a new formatted workbook containing Extracted_Data.",
         )
         profile = tk.StringVar(value=next(iter(EXTRACTION_PROFILES)))
         raw_folder = tk.StringVar()
@@ -2171,9 +2176,46 @@ class CorrelationDesktopApp:
             lambda: self._choose_open(chip_manifest),
             direction="input",
         )
+
+        def save_template() -> None:
+            value = filedialog.asksaveasfilename(
+                parent=self.root,
+                title="Save CorreLaTE chip manifest template",
+                initialfile=CHIP_MANIFEST_FILENAME,
+                defaultextension=".xlsx",
+                filetypes=[("Excel workbooks", "*.xlsx")],
+            )
+            if not value:
+                return
+            try:
+                destination = save_chip_manifest_template(value)
+            except Exception as error:
+                messagebox.showerror("Cannot save template", str(error), parent=self.root)
+                return
+            chip_manifest.set(str(destination))
+            self.status.set(f"Saved chip manifest template to {destination}")
+            messagebox.showinfo(
+                "Chip manifest template saved",
+                "Populate every row with DUT Nr, Wafer, X, Y, and DoE split. "
+                "All five fields are mandatory; keep DUT numbers and Wafer/X/Y combinations unique.",
+                parent=self.root,
+            )
+
+        ttk.Label(form, text="TEMPLATE · Chip manifest", style="Hint.TLabel").grid(
+            row=3, column=0, padx=(0, 10), pady=7, sticky="w"
+        )
+        ttk.Label(
+            form,
+            text="Blank one-sheet workbook with instructions, validation prompts, and required-field checks.",
+            style="Hint.TLabel",
+            wraplength=590,
+        ).grid(row=3, column=1, padx=(0, 8), pady=7, sticky="w")
+        ttk.Button(form, text="Save template…", command=save_template).grid(
+            row=3, column=2, pady=7, sticky="ew"
+        )
         self._add_path(
             form,
-            3,
+            4,
             "Extracted workbook",
             output,
             lambda: self._choose_save(output, "Save extracted ATE workbook"),
@@ -2220,7 +2262,7 @@ class CorrelationDesktopApp:
                 raw_folder.set("")
 
         run_button = ttk.Button(form, text="Run extraction", command=run)
-        run_button.grid(row=4, column=1, pady=(18, 0), sticky="e")
+        run_button.grid(row=5, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_raw_folder_state)
         update_raw_folder_state()
 

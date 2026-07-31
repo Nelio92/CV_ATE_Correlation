@@ -76,6 +76,11 @@ requires 64-bit Windows but does not require Python, administrator rights, or in
 local and is read from or written to user-selected locations. Custom profiles persist under
 `%APPDATA%\CorreLaTE\profiles.json` across executable upgrades.
 
+The release ZIP also contains `CorreLaTE_Chips_Manifest.xlsx`, the canonical one-sheet Section 2 input template. A fresh
+copy can be saved from the **Save template…** button in Section 2. `DUT Nr`, `Wafer`, `X`, `Y`, and `DoE split` are all
+mandatory. DUT numbers and Wafer/X/Y combinations must be unique; DoE split is retained for process-corner plots and
+variation analysis.
+
 Do not execute the application directly from inside the ZIP archive. Unsigned internal builds can trigger Microsoft
 Defender SmartScreen; verify the checksum and release source before using **More info → Run anyway**. Startup failures are
 written to `%LOCALAPPDATA%\CorreLaTE\logs\startup-error.log`.
@@ -268,8 +273,9 @@ The GUI and CLI use the same engine and persistent profile registry. The Signal 
 wordmark and is also used as the application window icon. The desktop interface provides six guided workflow tabs:
 
 1. `Profiles` — create, validate, update, or delete a reusable custom profile.
-2. `Extract TE` — select an extraction profile, chip manifest, and output workbook. Built-in profiles also select a
-    raw-data folder; custom profiles use the files assigned to their insertions.
+2. `Extract TE` — select an extraction profile, chip manifest, and output workbook. The included one-sheet template can
+    also be saved from this tab. Every row requires `DUT Nr`, `Wafer`, `X`, `Y`, and `DoE split`; built-in profiles also
+    select a raw-data folder, while custom profiles use the files assigned to their insertions.
 3. `Create CV Request` — generate the editable CV workbook and separate internal ATE manifest.
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
 5. `Correlate` — review configurable scaled-MAD findings before fitting, optionally exclude explicitly selected rows,

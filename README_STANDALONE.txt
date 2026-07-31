@@ -9,6 +9,8 @@ QUICK START
 1. Extract the complete release ZIP to a local folder.
 2. Double-click CorreLaTE.exe.
 3. Use the six numbered tabs from left to right.
+4. For Section 2, populate the included CorreLaTE_Chips_Manifest.xlsx or
+  create a fresh copy with the Section 2 "Save template..." button.
 
 Python, administrator permissions, and an internet connection are not required.
 Do not run the EXE directly from inside the ZIP archive.
@@ -25,6 +27,19 @@ Custom profiles are stored per Windows user at:
 Profiles remain available when a newer CorreLaTE release replaces the EXE.
 Custom profiles may contain absolute paths and can require updates when data is
 moved to another computer or drive.
+
+SECTION 2 CHIP MANIFEST
+-----------------------
+The release includes CorreLaTE_Chips_Manifest.xlsx. It contains one worksheet,
+an Excel input table, validation prompts, and a formatted instruction panel.
+Every chip row must provide all five fields:
+  DUT Nr     Required unique chip number used for TE-CV alignment.
+  Wafer      Required wafer identifier matching the raw TE data.
+  X / Y      Required integer die coordinates matching the raw TE data.
+  DoE split  Required process-corner label used for plots and variation review.
+
+Keep every DUT Nr and every Wafer/X/Y combination unique. Common DoE split
+values are TT, SS, and FF; project-specific process-corner labels are allowed.
 
 INTEGRITY CHECK
 ---------------

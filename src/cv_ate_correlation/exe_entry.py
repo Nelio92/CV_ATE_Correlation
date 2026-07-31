@@ -65,11 +65,31 @@ def run_frozen_smoke_test() -> None:
     from matplotlib.figure import Figure
     from PIL import features
 
+    from cv_ate_correlation.chip_manifest import (
+        CHIP_MANIFEST_COLUMNS,
+        CHIP_MANIFEST_SHEET,
+        chip_manifest_template_path,
+    )
     from cv_ate_correlation.gui import logo_asset_path
     from cv_ate_correlation.profiles_8188 import builtin_profile_ids
 
     if not logo_asset_path(64).is_file() or not logo_asset_path(256).is_file():
         raise RuntimeError("Packaged Signal Bloom logo assets are missing")
+    template_path = chip_manifest_template_path()
+    if not template_path.is_file():
+        raise RuntimeError("Packaged Section 2 chip-manifest template is missing")
+    from openpyxl import load_workbook
+
+    template = load_workbook(template_path, read_only=False, data_only=False)
+    try:
+        if template.sheetnames != [CHIP_MANIFEST_SHEET]:
+            raise RuntimeError("Packaged chip-manifest template must contain exactly one canonical worksheet")
+        sheet = template[CHIP_MANIFEST_SHEET]
+        headers = tuple(sheet.cell(row=1, column=index).value for index in range(1, 6))
+        if headers != CHIP_MANIFEST_COLUMNS:
+            raise RuntimeError("Packaged chip-manifest template has invalid required headers")
+    finally:
+        template.close()
     if not builtin_profile_ids():
         raise RuntimeError("No built-in correlation profiles were loaded")
     if not features.check("webp"):

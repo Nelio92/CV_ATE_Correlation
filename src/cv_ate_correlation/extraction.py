@@ -10,13 +10,19 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from .chip_manifest import CHIP_MANIFEST_COLUMNS
 from .models import DerivedField, ExtractionProfile, InsertionProfile, RegexField
 
 
 def _normalize_wafer(value: Any) -> str:
     text = str(value).strip().strip('"').strip("'")
-    if text.isdigit():
-        return str(int(text))
+    normalized = text.replace(",", ".")
+    try:
+        number = float(normalized)
+    except ValueError:
+        return text
+    if math.isfinite(number) and number.is_integer():
+        return str(int(number))
     return text
 
 
@@ -66,53 +72,99 @@ def _extract_regex(rule: RegexField, *, filename: str, test_name: str) -> Any:
 
 
 def read_chip_manifest(path: Path) -> tuple[set[tuple[str, int, int]], dict[tuple[str, int, int], dict[str, str]]]:
-    """Read a chip manifest using flexible legacy column names."""
+    """Read and validate the five required chip identity and split columns."""
     if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
         frame = pd.read_excel(path, sheet_name=0)
     else:
         frame = pd.read_csv(path, sep=None, engine="python")
 
-    original = {str(column).strip().lower(): column for column in frame.columns}
+    def normalize_header(value: Any) -> str:
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).split())
 
-    def find(*names: str) -> Any:
-        for name in names:
-            if name in original:
-                return original[name]
-        for normalized, actual in original.items():
-            if any(name in normalized for name in names):
-                return actual
-        return None
+    aliases = {
+        "DUT Nr": ("dut nr", "dut number", "dut no", "dut id", "dut"),
+        "Wafer": ("wafer", "wafer nr", "wafer number", "wafer id", "waf"),
+        "X": ("x", "x coordinate", "die x"),
+        "Y": ("y", "y coordinate", "die y"),
+        "DoE split": ("doe split", "split", "process split", "corner split", "process corner"),
+    }
+    available = {normalize_header(column): column for column in frame.columns}
+    resolved = {
+        canonical: next((available[name] for name in names if name in available), None)
+        for canonical, names in aliases.items()
+    }
+    missing_columns = [column for column in CHIP_MANIFEST_COLUMNS if resolved[column] is None]
+    if missing_columns:
+        raise ValueError(
+            "Chip manifest is missing required column(s): "
+            f"{', '.join(missing_columns)}. Use all five template columns: "
+            f"{', '.join(CHIP_MANIFEST_COLUMNS)}."
+        )
 
-    wafer_col = find("wafer", "waf")
-    x_col = find("x")
-    y_col = find("y")
-    if wafer_col is None or x_col is None or y_col is None:
-        if len(frame.columns) < 3:
-            raise ValueError(f"Chip manifest has no usable wafer/X/Y columns: {path}")
-        wafer_col, x_col, y_col = frame.columns[:3]
-    dut_col = find("dut nr", "dut_nr", "dut number", "dut")
-    split_col = find("doe split", "doe_split", "split")
+    def missing(value: Any) -> bool:
+        return pd.isna(value) or str(value).strip().casefold() in {"", "nan", "none"}
+
+    def metadata_text(value: Any) -> str:
+        if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    def coordinate(value: Any, name: str) -> int:
+        try:
+            number = float(str(value).strip().replace(",", "."))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{name} must be an integer") from error
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        return int(number)
 
     chips: set[tuple[str, int, int]] = set()
     metadata: dict[tuple[str, int, int], dict[str, str]] = {}
-    for _, row in frame.iterrows():
-        wafer = _normalize_wafer(row[wafer_col])
+    dut_rows: dict[str, int] = {}
+    chip_rows: dict[tuple[str, int, int], int] = {}
+    problems: list[str] = []
+    for frame_index, row in frame.iterrows():
+        excel_row = int(frame_index) + 2 if isinstance(frame_index, int) else str(frame_index)
+        values = {column: row[resolved[column]] for column in CHIP_MANIFEST_COLUMNS}
+        if all(missing(value) for value in values.values()):
+            continue
+        missing_values = [column for column, value in values.items() if missing(value)]
+        if missing_values:
+            problems.append(f"row {excel_row}: missing {', '.join(missing_values)}")
+            continue
+        wafer = _normalize_wafer(values["Wafer"])
         try:
-            x_value = int(float(row[x_col]))
-            y_value = int(float(row[y_col]))
-        except (TypeError, ValueError):
+            x_value = coordinate(values["X"], "X")
+            y_value = coordinate(values["Y"], "Y")
+        except ValueError as error:
+            problems.append(f"row {excel_row}: {error}")
             continue
-        if not wafer or wafer.lower() == "nan":
-            continue
+        dut = metadata_text(values["DUT Nr"])
+        split = metadata_text(values["DoE split"])
         key = (wafer, x_value, y_value)
+        normalized_dut = dut.casefold()
+        if normalized_dut in dut_rows:
+            problems.append(
+                f"row {excel_row}: duplicate DUT Nr '{dut}' (first used on row {dut_rows[normalized_dut]})"
+            )
+            continue
+        if key in chip_rows:
+            problems.append(
+                f"row {excel_row}: duplicate Wafer/X/Y {key} (first used on row {chip_rows[key]})"
+            )
+            continue
+        dut_rows[normalized_dut] = int(excel_row)
+        chip_rows[key] = int(excel_row)
         chips.add(key)
-        values: dict[str, str] = {}
-        if dut_col is not None and pd.notna(row[dut_col]):
-            value = row[dut_col]
-            values["DUT Nr"] = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value).strip()
-        if split_col is not None and pd.notna(row[split_col]):
-            values["DoE split"] = str(row[split_col]).strip()
-        metadata[key] = values
+        metadata[key] = {"DUT Nr": dut, "DoE split": split}
+    if problems:
+        preview = "; ".join(problems[:8])
+        remainder = f"; and {len(problems) - 8} more" if len(problems) > 8 else ""
+        raise ValueError(f"Chip manifest contains invalid required data: {preview}{remainder}")
+    if not chips:
+        raise ValueError(
+            "Chip manifest contains no chip rows. Populate DUT Nr, Wafer, X, Y, and DoE split before running Section 2."
+        )
     return chips, metadata
 
 

@@ -33,6 +33,7 @@ def test_branding_assets_are_declared_as_package_data() -> None:
     assert '"assets/*.png"' in configuration
     assert '"assets/*.svg"' in configuration
     assert '"assets/*.ico"' in configuration
+    assert '"assets/*.xlsx"' in configuration
     assert 'Wandji Lionel Wilfried (ES RF D RAD PTE TE4)' in configuration
     assert (assets / "correlate-signal-bloom.svg").is_file()
     assert (assets / "correlate-signal-bloom.ico").read_bytes().startswith(b"\x00\x00\x01\x00")

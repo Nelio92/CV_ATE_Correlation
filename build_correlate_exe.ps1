@@ -22,6 +22,7 @@ $releaseRoot = Join-Path $scriptRoot $ReleaseDir
 $exeSource = Join-Path $distRoot "CorreLaTE.exe"
 $releaseExe = Join-Path $releaseRoot "CorreLaTE.exe"
 $releaseReadme = Join-Path $scriptRoot "README_STANDALONE.txt"
+$chipManifestTemplate = Join-Path $scriptRoot "src/cv_ate_correlation/assets/CorreLaTE_Chips_Manifest.xlsx"
 $projectConfiguration = Get-Content (Join-Path $scriptRoot "pyproject.toml") -Raw
 $versionMatch = [regex]::Match($projectConfiguration, '(?m)^version\s*=\s*"([^"]+)"\s*$')
 if (-not $versionMatch.Success) {
@@ -34,6 +35,9 @@ if (-not $venvPython) {
 }
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw "CorreLaTE deployment requires 64-bit Windows"
+}
+if (-not (Test-Path $chipManifestTemplate)) {
+    throw "Section 2 chip-manifest template was not found: $chipManifestTemplate"
 }
 
 if ($Clean) {
@@ -99,6 +103,7 @@ New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
 Copy-Item $exeSource $releaseExe -Force
 $readmeContent = (Get-Content $releaseReadme -Raw).Replace("{{VERSION}}", $applicationVersion)
 $readmeContent | Set-Content (Join-Path $releaseRoot "README.txt") -Encoding UTF8
+Copy-Item $chipManifestTemplate (Join-Path $releaseRoot "CorreLaTE_Chips_Manifest.xlsx") -Force
 
 $exeHash = (Get-FileHash -Path $releaseExe -Algorithm SHA256).Hash.ToLowerInvariant()
 "SHA256  CorreLaTE.exe  $exeHash" | Set-Content `

@@ -49,7 +49,9 @@ def test_insertion_assignment_derives_group_name_and_temperature(tmp_path: Path)
     raw_file = tmp_path / "arbitrary_name.csv"
     write_raw_export(raw_file)
     manifest = tmp_path / "chips.csv"
-    pd.DataFrame({"Wafer": [1], "X": [2], "Y": [3], "DUT Nr": [7]}).to_csv(manifest, index=False)
+    pd.DataFrame({
+        "Wafer": [1], "X": [2], "Y": [3], "DUT Nr": [7], "DoE split": ["TT"],
+    }).to_csv(manifest, index=False)
     profile = ExtractionProfile(
         name="Insertion extraction",
         selector=ProfileTestSelector(exact=(101,)),
@@ -95,7 +97,9 @@ def test_be_insertion_uses_default_fuse_coordinate_fallback(
         tn_prefix=tn_prefix,
     )
     manifest = tmp_path / "chips.csv"
-    pd.DataFrame({"Wafer": [1], "X": [2], "Y": [3], "DUT Nr": [8]}).to_csv(manifest, index=False)
+    pd.DataFrame({
+        "Wafer": [1], "X": [2], "Y": [3], "DUT Nr": [8], "DoE split": ["SS"],
+    }).to_csv(manifest, index=False)
     profile = ExtractionProfile(
         name="BE FUSE coordinate fallback",
         selector=ProfileTestSelector(exact=(101,)),
