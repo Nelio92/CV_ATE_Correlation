@@ -7,8 +7,9 @@
 
 CorreLaTE is a profile-driven Python application for extracting ATE data, creating a controlled Lab/CV measurement
 handoff, validating returned measurements, fitting ATE-to-Lab correlation models, calculating guard bands, and generating
-focused Excel reports and a self-contained HTML sign-off report. The same engine is available through a five-step Tkinter
-desktop workflow and a command-line interface.
+focused Excel reports and a self-contained HTML sign-off report. The same engine is available through a six-step Tkinter
+desktop workflow and a command-line interface. The sixth workflow section applies approved correlation factors to separate
+productive ATE data and produces an insertion-aligned HTML yield forecast.
 
 This repository also retains the original CTRX8188 analysis scripts that were migrated from
 `Tasks_Automation_Code/IFX_Scripts/8188_CV_ATE_Correlation` with their history. They remain useful as traceable legacy
@@ -22,10 +23,10 @@ recommended implementation for new workflows.
 | Application | **CorreLaTE: ATE-to-Lab Correlation** |
 | Version | `0.1.0` |
 | Author | **Wandji Lionel Wilfried (ES RF D RAD PTE TE4)** |
-| Interfaces | Five-step desktop GUI and `cv-ate-correlation` CLI using one shared engine |
+| Interfaces | Six-step desktop GUI and `cv-ate-correlation` CLI using one shared engine |
 | Correlation models | Linear OLS, `Mean_Deltas`, `Median_Deltas`, and Physics-based with automatic Kf |
 | Guard-band policies | `distribution_sigma`, `max_residuals`, and `mean_deltas` |
-| Reports | Focused Excel factors and guard bands, all-model diagnostics, row-level data, and an offline self-contained HTML sign-off report |
+| Reports | Focused Excel factors and guard bands, correlation sign-off HTML, and a separate offline correlated-yield forecast HTML |
 | Visual identity | **Signal Bloom** — blue ATE and green Lab petals converge around a golden fitted path. The bloom represents scattered measurements becoming one coherent correlated result, while the white points emphasize transparent, traceable data. |
 
 An elegant **About** button occupies the free upper-right area of the desktop header. It opens a compact information dialog
@@ -53,6 +54,8 @@ At a high level, the current CorreLaTE workflow is:
 4. Calculate all four model diagnostics while applying the strategy and guard-band policy selected for each test set.
 5. Review focused factors and new limits in Excel, then use the self-contained HTML report for test-by-test sign-off with
     embedded model and series plots aligned across insertions.
+6. Select production insertions, assign their uncorrelated productive CSV files, apply the approved factors and correlated
+    limits, and review empirical yield, failures, and insertion-aligned CDF plots in a separate static HTML report.
 
 ![Illustrative Correlation Plot](docs/images/illustrative-correlation-plot.svg)
 
@@ -176,6 +179,48 @@ then two focused tables for factors and correlated limits by insertion, followed
 horizontally across insertions. Sections are searchable and collapsible, and plots can be enlarged for review meetings.
 The Excel workbook remains the numerical authority for complete diagnostics and row-level values.
 
+### Forecast Productive Yield
+
+After Section 5 factors and correlated limits are approved, a separate productive-data campaign can be forecast without
+altering the original production CSVs. Each CSV is explicitly assigned to one insertion already defined in the selected
+Section 1 profile:
+
+```powershell
+cv-ate-correlation forecast-yield `
+    --profile ctrx8144-txpa `
+    --correlation-report Data/Outputs/TXPA_Correlation_New.xlsx `
+    --productive-input S1=Data/Productive/S1_Lot_A.csv `
+    --productive-input S1=Data/Productive/S1_Lot_B.csv `
+    --productive-input B1=Data/Productive/B1_Lot_A.csv `
+    --html-report Data/Outputs/TXPA_Yield_Forecast.html
+```
+
+`--productive-input INSERTION=CSV` is repeatable. The selected insertion supplies its Section 1 FE/BE identity and
+temperature while the productive CSV supplies all DUT measurements. The streaming raw-data adapter extracts only the
+configured tests. It does not require the characterization chip manifest and does not reuse the characterization files
+assigned in Section 1.
+
+For every productive row, CorreLaTE selects the approved Section 5 factor using its configured test set and all unpooled
+grouping conditions. Missing, ambiguous, stale, or duplicate factor matches stop the run rather than silently applying a
+different factor. Correlated productive values are calculated as follows:
+
+- `Linear`: $CV_{forecast}=a\,ATE+b$
+- `Mean_Deltas` and `Median_Deltas`: $CV_{forecast}=ATE+b$
+- `Physics-based`: $CV_{forecast}=ATE-(\alpha K_f+\beta)$; productive Kf rows must be present in the CSV campaign
+
+The forecast PASS rule uses inclusive correlated limits:
+
+$$
+LTL_{correlated}\le CV_{forecast}\le UTL_{correlated}.
+$$
+
+The self-contained HTML report provides overall and per-test yield percentages, PASS/FAIL counts, below-LTL and above-UTL
+counts, minimum, mean, standard deviation, percentiles, median, maximum, and Cpk when defined. Every productive sample is
+drawn as an empirical CDF marker rather than a connecting line. Failing samples use red `X` markers, every insertion with
+a failure receives a red plot border, and every test with at least one failure receives a red expanded review section and
+index entry. CDF plots for the same test and conditions are kept in one horizontally scrollable insertion row. The result
+is an empirical forecast from the supplied productive samples, not a guarantee of future manufacturing yield.
+
 ### Desktop GUI
 
 Launch the GUI with:
@@ -185,7 +230,7 @@ cv-ate-correlation gui
 ```
 
 The GUI and CLI use the same engine and persistent profile registry. The Signal Bloom mark appears beside the CorreLaTE
-wordmark and is also used as the application window icon. The desktop interface provides five guided workflow tabs:
+wordmark and is also used as the application window icon. The desktop interface provides six guided workflow tabs:
 
 1. `Profiles` — create, validate, update, or delete a reusable custom profile.
 2. `Extract TE` — select an extraction profile, chip manifest, and output workbook. Built-in profiles also select a
@@ -194,10 +239,12 @@ wordmark and is also used as the application window icon. The desktop interface 
 4. `Import CV Results` — validate returned request coverage and produce the one-to-one aligned input.
 5. `Correlate` — review configurable scaled-MAD findings before fitting, optionally exclude explicitly selected rows,
     then generate the Excel report and optional self-contained HTML sign-off report using the Kf retained in the aligned input.
+6. `Forecast Yield` — select one or more insertions defined in Section 1, assign productive raw CSV files independently
+    to each selected insertion, load the Section 5 `Correlation_Summary`, and generate the separate correlated-yield HTML.
 
 The upper-right `About` button opens a focused dialog with the application version, author, supported models and guard-band
 policies, report outputs, expanded Signal Bloom meaning, workflow summary, and safe TE/Lab handoff guidance. Keeping About
-in the header leaves the notebook dedicated to the five numbered operational steps.
+in the header leaves the notebook dedicated to the six numbered operational steps.
 
 Workflow file fields are visually classified to prevent direction mistakes:
 

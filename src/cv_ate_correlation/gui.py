@@ -67,6 +67,12 @@ from cv_ate_correlation.profiles_8188 import (
     refresh_profiles,
 )
 from cv_ate_correlation.reporting import write_excel_report
+from cv_ate_correlation.yield_forecast import (
+    forecast_yield,
+    load_productive_csv_inputs,
+    validate_productive_insertion_inputs,
+)
+from cv_ate_correlation.yield_forecast_report import write_yield_forecast_html
 
 
 Action = Callable[[], Any]
@@ -89,7 +95,7 @@ def about_information() -> tuple[tuple[str, str], ...]:
     return (
         ("Version", APPLICATION_VERSION),
         ("Author", APPLICATION_AUTHOR),
-        ("Interface", "Five-step desktop workflow and command-line interface using one shared engine"),
+        ("Interface", "Six-step desktop workflow and command-line interface using one shared engine"),
         ("Correlation models", "Linear (OLS), Mean_Deltas, Median_Deltas, and Physics-based with automatic Kf"),
         ("Guard-band policies", "distribution_sigma, max_residuals, and mean_deltas"),
         (
@@ -98,7 +104,7 @@ def about_information() -> tuple[tuple[str, str], ...]:
         ),
         (
             "Reports",
-            "Focused Excel factors and guard bands, complete row-level data, and a self-contained HTML sign-off report",
+            "Focused Excel factors and guard bands, a self-contained HTML sign-off report, and a correlated productive-yield forecast HTML",
         ),
         (
             "Visual identity",
@@ -575,7 +581,7 @@ def workbook_sheet_names(path: str | Path) -> tuple[str, ...]:
 
 
 class CorrelationDesktopApp:
-    """Five-step Tkinter shell with an About section around the shared engine."""
+    """Six-step Tkinter shell with an About section around the shared engine."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -626,6 +632,7 @@ class CorrelationDesktopApp:
         self._build_request_tab()
         self._build_import_tab()
         self._build_correlation_tab()
+        self._build_yield_forecast_tab()
 
     def _load_logo(self, size: int) -> tk.PhotoImage | None:
         path = logo_asset_path(size)
@@ -718,7 +725,7 @@ class CorrelationDesktopApp:
             guidance,
             text=(
                 "Profiles → Extract ATE and Kf → Create the Lab/CV request → Validate and align returned results → "
-                "Generate factors, guard bands, Excel data, and an offline HTML sign-off report. Measurement processing is local. "
+                "Generate factors and limits → Forecast productive yield from selected insertion CSVs. Measurement processing is local. "
                 "The Lab/CV request omits ATE values, limits, and internal Kf; keep the separate ATE manifest on the TE side."
             ),
             style="Hint.TLabel",
@@ -2537,6 +2544,254 @@ class CorrelationDesktopApp:
         run_button.grid(row=8, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_covariate_state)
         update_covariate_state()
+
+    def _build_yield_forecast_tab(self) -> None:
+        form = self._make_tab(
+            "6 · Forecast Yield",
+            "Forecast productive yield using correlated tests and limits",
+            "INPUT: the Section 5 correlation report and uncorrelated productive wide-CSV data assigned per selected "
+            "Section 1 insertion. OUTPUT: one self-contained HTML report with sample-based CDF plots, correlated limits, "
+            "yield statistics, and highlighted failures.",
+        )
+        profile = tk.StringVar(value=next(iter(CORRELATION_PROFILES)))
+        correlation_report = tk.StringVar()
+        correlation_sheet = tk.StringVar(value="Correlation_Summary")
+        html_output = tk.StringVar()
+        insertion_selector = tk.StringVar()
+        insertion_selected = tk.BooleanVar(value=False)
+        insertion_summary = tk.StringVar()
+        assignments: list[dict[str, Any]] = []
+        current = {"index": -1, "loading": False}
+
+        self._add_registered_profile_combo(form, 0, "Correlation profile", profile)
+        correlation_sheet_combo = self._add_combo(
+            form, 2, "Correlation summary sheet", correlation_sheet, ()
+        )
+        self._add_path(
+            form,
+            1,
+            "Section 5 correlation report",
+            correlation_report,
+            lambda: self._choose_open(
+                correlation_report,
+                correlation_sheet,
+                correlation_sheet_combo,
+            ),
+            direction="input",
+        )
+
+        insertion_frame = ttk.LabelFrame(
+            form,
+            text="Productive CSV input by Section 1 insertion",
+            padding=10,
+        )
+        insertion_frame.grid(row=3, column=0, columnspan=3, pady=10, sticky="ew")
+        insertion_frame.columnconfigure(1, weight=1)
+        self._add_label(insertion_frame, 0, "Insertion")
+        insertion_combo = ttk.Combobox(
+            insertion_frame,
+            textvariable=insertion_selector,
+            state="readonly",
+        )
+        insertion_combo.grid(row=0, column=1, padx=(0, 8), pady=5, sticky="ew")
+        ttk.Label(
+            insertion_frame,
+            textvariable=insertion_summary,
+            style="Hint.TLabel",
+            wraplength=360,
+        ).grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(
+            insertion_frame,
+            text="Include this insertion in the yield forecast",
+            variable=insertion_selected,
+        ).grid(row=1, column=1, columnspan=2, pady=5, sticky="w")
+        self._add_label(insertion_frame, 2, "Productive raw CSV files")
+        file_area = ttk.Frame(insertion_frame)
+        file_area.grid(row=2, column=1, columnspan=2, pady=5, sticky="ew")
+        file_area.columnconfigure(0, weight=1)
+        productive_files = tk.Listbox(file_area, height=6, selectmode="extended")
+        productive_files.grid(row=0, column=0, rowspan=2, sticky="ew")
+        file_scroll = ttk.Scrollbar(file_area, orient="vertical", command=productive_files.yview)
+        file_scroll.grid(row=0, column=1, rowspan=2, sticky="ns")
+        productive_files.configure(yscrollcommand=file_scroll.set)
+
+        def selector_values() -> tuple[str, ...]:
+            return tuple(
+                f"{'✓' if item['selected'] else '○'} {item['name']} · {item['group']} · "
+                f"{float(item['temperature']):g} °C · {len(item['files'])} file(s)"
+                for item in assignments
+            )
+
+        def store_current() -> None:
+            if current["loading"] or current["index"] < 0 or not assignments:
+                return
+            index = int(current["index"])
+            assignments[index]["selected"] = insertion_selected.get()
+            assignments[index]["files"] = list(productive_files.get(0, "end"))
+            insertion_combo.configure(values=selector_values())
+            insertion_combo.current(index)
+
+        def load_insertion(index: int) -> None:
+            if not assignments:
+                current["index"] = -1
+                insertion_combo.configure(values=())
+                insertion_selector.set("")
+                insertion_summary.set(
+                    "No insertions are configured. Define and save them in Section 1 first."
+                )
+                insertion_selected.set(False)
+                productive_files.delete(0, "end")
+                return
+            item = assignments[index]
+            current.update(index=index, loading=True)
+            insertion_combo.configure(values=selector_values())
+            insertion_combo.current(index)
+            insertion_selected.set(bool(item["selected"]))
+            productive_files.delete(0, "end")
+            for path in item["files"]:
+                productive_files.insert("end", path)
+            insertion_summary.set(
+                f"{item['group']} insertion at {float(item['temperature']):g} °C. "
+                "Only newly selected productive data is used; Section 1 characterization files are not reused."
+            )
+            current["loading"] = False
+
+        def choose_insertion(_event: object | None = None) -> None:
+            selected_index = max(insertion_combo.current(), 0)
+            store_current()
+            load_insertion(selected_index)
+
+        def add_productive_files() -> None:
+            if current["index"] < 0:
+                messagebox.showinfo(
+                    "No insertion",
+                    "Define insertions in Section 1 before assigning productive data.",
+                    parent=self.root,
+                )
+                return
+            paths = filedialog.askopenfilenames(
+                parent=self.root,
+                title="Select productive raw CSV files for this insertion",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            )
+            existing = set(productive_files.get(0, "end"))
+            for path in paths:
+                if path not in existing:
+                    productive_files.insert("end", path)
+                    existing.add(path)
+            if paths:
+                insertion_selected.set(True)
+                store_current()
+
+        def remove_productive_files() -> None:
+            for index in reversed(productive_files.curselection()):
+                productive_files.delete(index)
+            store_current()
+
+        file_buttons = ttk.Frame(file_area)
+        file_buttons.grid(row=0, column=2, padx=(8, 0), sticky="n")
+        ttk.Button(file_buttons, text="Add CSVs…", command=add_productive_files).pack(
+            fill="x", pady=(0, 5)
+        )
+        ttk.Button(file_buttons, text="Remove", command=remove_productive_files).pack(fill="x")
+        insertion_combo.bind("<<ComboboxSelected>>", choose_insertion)
+        insertion_selected.trace_add("write", lambda *_args: store_current())
+
+        self._add_path(
+            form,
+            4,
+            "Yield forecast HTML report",
+            html_output,
+            lambda: self._choose_save_html(html_output, "Save correlated yield forecast report"),
+            direction="output",
+        )
+        ttk.Label(
+            form,
+            text=(
+                "Productive values remain unmodified. CorreLaTE applies the approved factor for each matching test, "
+                "insertion, and condition; checks inclusive correlated limits; and reports empirical yield from the "
+                "provided samples. Physics-based test sets additionally require productive Kf rows in the CSVs."
+            ),
+            style="Hint.TLabel",
+            wraplength=820,
+        ).grid(row=5, column=0, columnspan=3, pady=(4, 8), sticky="w")
+
+        def load_profile_insertions(*_args: object) -> None:
+            assignments.clear()
+            extraction_profile = get_extraction_profile(profile.get())
+            assignments.extend({
+                "name": insertion.name,
+                "group": insertion.group,
+                "temperature": insertion.temperature,
+                "selected": False,
+                "files": [],
+            } for insertion in extraction_profile.insertions)
+            load_insertion(0)
+
+        def run() -> None:
+            store_current()
+            values = {
+                "profile": profile.get(),
+                "correlation report": correlation_report.get(),
+                "correlation summary sheet": correlation_sheet.get(),
+                "yield forecast HTML": html_output.get(),
+            }
+            if not self._validate_required(**values):
+                return
+            try:
+                selected_assignments = validate_productive_insertion_inputs(
+                    assignments,
+                    get_extraction_profile(values["profile"]).insertions,
+                )
+            except Exception as error:
+                messagebox.showerror(
+                    "Invalid productive data assignment",
+                    str(error),
+                    parent=self.root,
+                )
+                return
+
+            def action() -> str:
+                selected_profile = get_correlation_profile(values["profile"])
+                factors = pd.read_excel(
+                    Path(values["correlation report"]),
+                    sheet_name=values["correlation summary sheet"],
+                )
+                productive = load_productive_csv_inputs(
+                    selected_assignments,
+                    get_extraction_profile(values["profile"]),
+                    selected_profile,
+                )
+                result = forecast_yield(productive, factors, selected_profile)
+                destination = Path(values["yield forecast HTML"])
+                plot_count = write_yield_forecast_html(result, selected_profile, destination)
+                samples = int(result.summary["SampleCount"].sum())
+                failures = int(result.summary["FailCount"].sum())
+                yield_percent = 100.0 * (samples - failures) / samples
+                affected = int(result.summary.loc[
+                    result.summary["FailCount"].gt(0), "Test Number"
+                ].nunique())
+                return (
+                    f"Forecasted {samples:,} productive samples at {yield_percent:.6g}% yield; "
+                    f"{failures:,} failure(s) across {affected:,} affected test(s). "
+                    f"Embedded {plot_count:,} insertion CDF plots in {destination}."
+                )
+
+            self._start_job(
+                run_button,
+                "Extracting productive CSV data and forecasting correlated yield…",
+                action,
+            )
+
+        run_button = ttk.Button(form, text="Generate yield forecast", command=run)
+        run_button.grid(row=6, column=1, pady=(14, 0), sticky="e")
+        ttk.Button(
+            insertion_frame,
+            text="Reload Section 1 insertions",
+            command=load_profile_insertions,
+        ).grid(row=3, column=1, pady=(6, 0), sticky="w")
+        profile.trace_add("write", load_profile_insertions)
+        load_profile_insertions()
 
 
 def launch() -> None:

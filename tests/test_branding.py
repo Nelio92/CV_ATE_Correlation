@@ -45,9 +45,11 @@ def test_about_information_uses_package_identity_and_documents_capabilities() ->
     assert APPLICATION_AUTHOR == __author__ == "Wandji Lionel Wilfried (ES RF D RAD PTE TE4)"
     assert information["Version"] == __version__
     assert information["Author"] == __author__
+    assert "Six-step" in information["Interface"]
     assert "Physics-based" in information["Correlation models"]
     assert "automatic Kf" in information["Correlation models"]
     assert "self-contained HTML sign-off report" in information["Reports"]
+    assert "productive-yield forecast HTML" in information["Reports"]
     assert "scaled-MAD" in information["Outlier handling"]
     assert "default n=12" in information["Outlier handling"]
     assert "explicitly enables and selects exclusions" in information["Outlier handling"]

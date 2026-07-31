@@ -119,6 +119,35 @@ def read_chip_manifest(path: Path) -> tuple[set[tuple[str, int, int]], dict[tupl
 class LegacyWideTeCsvAdapter:
     """Extract selected tests without loading multi-gigabyte exports into memory."""
 
+    def extract_productive_files(
+        self,
+        files: Iterable[Path],
+        profile: ExtractionProfile,
+        insertion: InsertionProfile,
+    ) -> pd.DataFrame:
+        """Extract every device in productive CSVs for one explicitly selected insertion."""
+        resolved = [Path(path).expanduser().resolve() for path in files]
+        if not resolved:
+            raise ValueError(f"Insertion '{insertion.name}' needs at least one productive CSV file")
+        missing = [str(path) for path in resolved if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Productive files for insertion '{insertion.name}' do not exist: {missing}"
+            )
+        rows: list[dict[str, Any]] = []
+        for path in resolved:
+            extracted = list(self._extract_file(path, None, {}, profile, insertion))
+            for row in extracted:
+                row["Productive Source File"] = str(path)
+            rows.extend(extracted)
+        if not rows:
+            raise ValueError(
+                f"No productive rows matched the configured tests for insertion '{insertion.name}'"
+            )
+        return pd.DataFrame(rows).reindex(
+            columns=[*profile.output_columns, "Productive Source File"]
+        )
+
     def extract(self, input_folder: Path, chip_manifest: Path, profile: ExtractionProfile) -> pd.DataFrame:
         chips, chip_metadata = read_chip_manifest(chip_manifest)
         rows: list[dict[str, Any]] = []
@@ -155,7 +184,7 @@ class LegacyWideTeCsvAdapter:
     def _extract_file(
         self,
         path: Path,
-        chips: set[tuple[str, int, int]],
+        chips: set[tuple[str, int, int]] | None,
         metadata: dict[tuple[str, int, int], dict[str, str]],
         profile: ExtractionProfile,
         insertion: InsertionProfile | None = None,
@@ -245,7 +274,7 @@ class LegacyWideTeCsvAdapter:
                 except (TypeError, ValueError):
                     continue
                 chip_key = (wafer, x_value, y_value)
-                if chip_key not in chips:
+                if chips is not None and chip_key not in chips:
                     continue
 
                 chip_values = metadata.get(chip_key, {})

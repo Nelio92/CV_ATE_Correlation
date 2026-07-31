@@ -29,6 +29,24 @@ from .profiles_8188 import (
     refresh_profiles,
 )
 from .reporting import write_excel_report, write_plots
+from .yield_forecast import (
+    forecast_yield,
+    load_productive_csv_inputs,
+    validate_productive_insertion_inputs,
+)
+from .yield_forecast_report import write_yield_forecast_html
+
+
+def _parse_productive_input(value: str) -> tuple[str, Path]:
+    """Parse INSERTION=CSV used by the forecast CLI."""
+    insertion, separator, path = value.partition("=")
+    insertion = insertion.strip()
+    path = path.strip()
+    if not separator or not insertion or not path:
+        raise argparse.ArgumentTypeError(
+            "productive input must use INSERTION=CSV, for example S1=C:/data/lot.csv"
+        )
+    return insertion, Path(path)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -77,6 +95,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional self-contained offline HTML report with embedded plots",
     )
     correlate.add_argument("--plots", type=Path, help=argparse.SUPPRESS)
+
+    forecast = subparsers.add_parser(
+        "forecast-yield",
+        help="Forecast productive yield from Section 5 factors and insertion CSVs",
+    )
+    forecast.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
+    forecast.add_argument("--correlation-report", required=True, type=Path)
+    forecast.add_argument("--correlation-sheet", default="Correlation_Summary")
+    forecast.add_argument(
+        "--productive-input",
+        required=True,
+        action="append",
+        type=_parse_productive_input,
+        metavar="INSERTION=CSV",
+        help="Productive raw CSV assigned to a Section 1 insertion; repeat for files and insertions",
+    )
+    forecast.add_argument("--html-report", required=True, type=Path)
 
     request = subparsers.add_parser("request", help="Generate an editable CV request and TE-only ATE manifest")
     request.add_argument("--profile", required=True, choices=sorted(CORRELATION_PROFILES))
@@ -140,6 +175,53 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_dataframe_workbook(args.output, {"Correlation_Input": result})
         print(f"Wrote {len(result)} validated one-to-one rows to {args.output}")
+        return 0
+    if args.command == "forecast-yield":
+        correlation_profile = get_correlation_profile(args.profile)
+        extraction_profile = get_extraction_profile(args.profile)
+        files_by_insertion: dict[str, list[Path]] = {}
+        for insertion, path in args.productive_input:
+            files_by_insertion.setdefault(insertion, []).append(path)
+        definitions = [
+            {
+                "name": insertion.name,
+                "selected": insertion.name in files_by_insertion,
+                "files": files_by_insertion.get(insertion.name, []),
+            }
+            for insertion in extraction_profile.insertions
+        ]
+        unknown = sorted(
+            set(files_by_insertion) - {item.name for item in extraction_profile.insertions}
+        )
+        if unknown:
+            raise SystemExit(
+                f"Unknown insertion(s) for profile '{args.profile}': {', '.join(unknown)}"
+            )
+        assignments = validate_productive_insertion_inputs(
+            definitions,
+            extraction_profile.insertions,
+        )
+        factors = pd.read_excel(
+            args.correlation_report,
+            sheet_name=args.correlation_sheet,
+        )
+        production = load_productive_csv_inputs(
+            assignments,
+            extraction_profile,
+            correlation_profile,
+        )
+        result = forecast_yield(production, factors, correlation_profile)
+        plots = write_yield_forecast_html(
+            result,
+            correlation_profile,
+            args.html_report,
+        )
+        samples = int(result.summary["SampleCount"].sum())
+        failures = int(result.summary["FailCount"].sum())
+        print(
+            f"Forecasted {samples} productive samples with {failures} failure(s); "
+            f"wrote {plots} CDF plots to {args.html_report}"
+        )
         return 0
 
     profile = get_correlation_profile(args.profile)
