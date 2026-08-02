@@ -85,6 +85,40 @@ APPLICATION_TITLE = "CorreLaTE: ATE-to-Lab Correlation"
 APPLICATION_AUTHOR = __author__
 APPLICATION_VERSION = __version__
 LOGO_ASSET_SIZES = (64, 256)
+COLOR_SURFACE = "#F3F6F8"
+COLOR_TEXT = "#24384A"
+COLOR_MUTED = "#5C6975"
+COLOR_BRAND_NAVY = "#173F73"
+COLOR_BRAND_TEAL = "#2F7785"
+COLOR_BRAND_GREEN = "#2E7D5B"
+COLOR_BRAND_GOLD = "#A66A12"
+COLOR_DANGER = "#A34646"
+ACTION_BUTTON_PALETTE: dict[str, tuple[str, str, str]] = {
+    "primary": (COLOR_BRAND_NAVY, "#21558F", "#102F57"),
+    "secondary": (COLOR_BRAND_TEAL, "#3C8996", "#245E69"),
+    "success": (COLOR_BRAND_GREEN, "#398E6A", "#246347"),
+    "warning": (COLOR_BRAND_GOLD, "#B77A1C", "#83520D"),
+    "danger": (COLOR_DANGER, "#B65353", "#823737"),
+}
+ACTION_BUTTON_ICON_SEGMENTS: dict[str, tuple[tuple[int, int, int, int], ...]] = {
+    "info": ((6, 2, 8, 4), (6, 5, 8, 12), (4, 1, 10, 2), (3, 2, 4, 11), (10, 2, 11, 11), (4, 11, 10, 12)),
+    "close": ((2, 2, 4, 4), (4, 4, 6, 6), (6, 6, 8, 8), (8, 8, 10, 10), (10, 10, 12, 12), (10, 2, 12, 4), (8, 4, 10, 6), (4, 8, 6, 10), (2, 10, 4, 12)),
+    "open": ((2, 3, 7, 5), (2, 4, 12, 12), (3, 2, 6, 4)),
+    "folder": ((2, 3, 7, 5), (2, 4, 12, 12), (3, 2, 6, 4), (6, 7, 11, 9)),
+    "save": ((2, 2, 12, 12), (4, 2, 9, 5), (4, 8, 10, 11), (8, 3, 9, 5)),
+    "plus": ((6, 2, 8, 12), (2, 6, 12, 8)),
+    "minus": ((2, 6, 12, 8),),
+    "trash": ((4, 4, 10, 12), (3, 2, 11, 4), (5, 1, 9, 2), (5, 5, 6, 10), (8, 5, 9, 10)),
+    "file": ((3, 1, 9, 2), (3, 1, 5, 12), (4, 11, 11, 12), (10, 4, 12, 12), (8, 1, 10, 5), (8, 4, 12, 6)),
+    "check": ((2, 6, 4, 8), (4, 8, 6, 10), (6, 6, 8, 8), (8, 4, 10, 6), (10, 2, 12, 4)),
+    "toggle": ((2, 3, 10, 5), (9, 1, 12, 4), (4, 9, 12, 11), (2, 10, 5, 13)),
+    "next": ((2, 6, 10, 8), (8, 3, 10, 5), (10, 5, 12, 9), (8, 9, 10, 11)),
+    "refresh": ((3, 2, 10, 3), (2, 3, 3, 7), (9, 1, 12, 4), (4, 11, 11, 12), (11, 7, 12, 11), (2, 10, 5, 13)),
+    "report": ((2, 10, 4, 12), (5, 7, 7, 12), (8, 4, 10, 12), (11, 2, 13, 12)),
+    "template": ((2, 1, 10, 2), (2, 1, 4, 12), (3, 11, 12, 12), (10, 4, 12, 12), (8, 1, 10, 5), (6, 6, 10, 7), (6, 8, 10, 9)),
+    "import": ((6, 1, 8, 8), (3, 6, 6, 9), (8, 6, 11, 9), (2, 10, 12, 12)),
+}
+ACTION_BUTTON_ICONS = frozenset((*ACTION_BUTTON_ICON_SEGMENTS, "run"))
 
 
 def logo_asset_path(size: int = 64) -> Path:
@@ -592,17 +626,10 @@ class CorrelationDesktopApp:
         self.root.title(APPLICATION_TITLE)
         self.root.geometry("1180x760")
         self.root.minsize(760, 500)
+        self.root.configure(background=COLOR_SURFACE)
 
-        style = ttk.Style(root)
-        style.configure("BrandTitle.TLabel", foreground="#173F73", font=("Segoe UI", 22, "bold"))
-        style.configure("BrandSubtitle.TLabel", foreground="#278F9E", font=("Segoe UI", 10))
-        style.configure("About.TButton", font=("Segoe UI", 9, "bold"), padding=(12, 7))
-        style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
-        style.configure("Hint.TLabel", foreground="#555555")
-        style.configure("Input.TLabel", foreground="#1F4E78", font=("Segoe UI", 9, "bold"))
-        style.configure("Output.TLabel", foreground="#2E7D32", font=("Segoe UI", 9, "bold"))
-        style.configure("Input.TEntry", fieldbackground="#EAF2F8")
-        style.configure("Output.TEntry", fieldbackground="#EAF4EA")
+        self._configure_styles()
+        self._button_icons: dict[str, tk.PhotoImage] = {}
 
         self._window_icon = self._load_logo(256)
         if self._window_icon is not None:
@@ -638,6 +665,56 @@ class CorrelationDesktopApp:
         self._build_correlation_tab()
         self._build_yield_forecast_tab()
 
+    def _configure_styles(self) -> None:
+        """Apply the Signal Bloom visual system, including reliable filled buttons on Windows."""
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        style.configure("TFrame", background=COLOR_SURFACE)
+        style.configure("TLabel", background=COLOR_SURFACE, foreground=COLOR_TEXT)
+        style.configure("TCheckbutton", background=COLOR_SURFACE, foreground=COLOR_TEXT)
+        style.configure("TLabelframe", background=COLOR_SURFACE)
+        style.configure("TLabelframe.Label", background=COLOR_SURFACE, foreground=COLOR_TEXT)
+        style.configure("TNotebook", background=COLOR_SURFACE, borderwidth=0)
+        style.configure("TNotebook.Tab", font=("Segoe UI", 9, "bold"), padding=(13, 7))
+        style.map("TNotebook.Tab", foreground=[("selected", COLOR_BRAND_NAVY)])
+        style.configure("BrandTitle.TLabel", foreground=COLOR_BRAND_NAVY, font=("Segoe UI", 22, "bold"))
+        style.configure("BrandSubtitle.TLabel", foreground="#278F9E", font=("Segoe UI", 10))
+        style.configure("Heading.TLabel", foreground=COLOR_BRAND_NAVY, font=("Segoe UI", 12, "bold"))
+        style.configure("Hint.TLabel", foreground=COLOR_MUTED)
+        style.configure("Input.TLabel", foreground="#1F4E78", font=("Segoe UI", 9, "bold"))
+        style.configure("Output.TLabel", foreground="#2E7D32", font=("Segoe UI", 9, "bold"))
+        style.configure("Input.TEntry", fieldbackground="#EAF2F8")
+        style.configure("Output.TEntry", fieldbackground="#EAF4EA")
+        for tone, (background, hover_background, pressed_background) in ACTION_BUTTON_PALETTE.items():
+            style_name = f"{tone.title()}.Action.TButton"
+            style.configure(
+                style_name,
+                background=background,
+                foreground="#FFFFFF",
+                bordercolor=background,
+                lightcolor=background,
+                darkcolor=background,
+                focuscolor="#58B7C5",
+                focusthickness=1,
+                font=("Segoe UI", 9, "bold"),
+                padding=(12, 7),
+                relief="flat",
+                borderwidth=1,
+            )
+            style.map(
+                style_name,
+                background=[
+                    ("disabled", "#A8B2BA"),
+                    ("pressed", pressed_background),
+                    ("active", hover_background),
+                ],
+                foreground=[("disabled", "#EEF2F4"), ("!disabled", "#FFFFFF")],
+                bordercolor=[("disabled", "#A8B2BA"), ("!disabled", background)],
+                lightcolor=[("disabled", "#A8B2BA"), ("!disabled", background)],
+                darkcolor=[("disabled", "#A8B2BA"), ("!disabled", background)],
+            )
+
     def _load_logo(self, size: int) -> tk.PhotoImage | None:
         path = logo_asset_path(size)
         if not path.is_file():
@@ -646,6 +723,48 @@ class CorrelationDesktopApp:
             return tk.PhotoImage(master=self.root, file=str(path))
         except tk.TclError:
             return None
+
+    def _button_icon(self, name: str) -> tk.PhotoImage:
+        """Create and retain a compact white icon for a filled action button."""
+        if name not in ACTION_BUTTON_ICONS:
+            raise ValueError(f"Unknown action-button icon: {name}")
+        cached = self._button_icons.get(name)
+        if cached is not None:
+            return cached
+        image = tk.PhotoImage(master=self.root, width=14, height=14)
+        if name == "run":
+            for row in range(2, 12):
+                half_width = min(row - 2, 11 - row) // 2 + 1
+                image.put("#FFFFFF", to=(4, row, 4 + half_width + 3, row + 1))
+        else:
+            for rectangle in ACTION_BUTTON_ICON_SEGMENTS[name]:
+                image.put("#FFFFFF", to=rectangle)
+        self._button_icons[name] = image
+        return image
+
+    def _button(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        command: Callable[..., Any],
+        icon: str,
+        tone: str = "secondary",
+        **options: Any,
+    ) -> ttk.Button:
+        """Create one filled, icon-led button from the shared Signal Bloom system."""
+        if tone not in ACTION_BUTTON_PALETTE:
+            raise ValueError(f"Unknown action-button tone: {tone}")
+        return ttk.Button(
+            parent,
+            text=text,
+            command=command,
+            image=self._button_icon(icon),
+            compound="left",
+            style=f"{tone.title()}.Action.TButton",
+            takefocus=True,
+            **options,
+        )
 
     def _build_brand_header(self) -> None:
         header = ttk.Frame(self.root, padding=(16, 10, 16, 8))
@@ -663,10 +782,10 @@ class CorrelationDesktopApp:
         ttk.Label(header, text="ATE-to-Lab Correlation", style="BrandSubtitle.TLabel").grid(
             row=1, column=text_column, pady=(0, 3), sticky="nw"
         )
-        ttk.Button(
+        self._button(
             header,
-            text="ⓘ  About",
-            style="About.TButton",
+            text="About",
+            icon="info",
             command=self._show_about_dialog,
         ).grid(row=0, column=3, rowspan=2, padx=(24, 0), sticky="e")
         ttk.Separator(self.root, orient="horizontal").pack(fill="x")
@@ -741,7 +860,7 @@ class CorrelationDesktopApp:
             self._about_dialog = None
             dialog.destroy()
 
-        ttk.Button(content, text="Close", command=close_dialog).grid(
+        self._button(content, text="Close", icon="close", command=close_dialog).grid(
             row=4, column=0, pady=(18, 0), sticky="e"
         )
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
@@ -832,6 +951,7 @@ class CorrelationDesktopApp:
         *,
         direction: str,
         button_text: str | None = None,
+        button_icon: str | None = None,
     ) -> tuple[ttk.Entry, ttk.Button]:
         if direction not in {"input", "output"}:
             raise ValueError("Path direction must be 'input' or 'output'")
@@ -843,7 +963,15 @@ class CorrelationDesktopApp:
         entry.grid(row=row, column=1, padx=(0, 8), pady=7, sticky="ew")
         if button_text is None:
             button_text = "Open…" if direction == "input" else "Save as…"
-        button = ttk.Button(form, text=button_text, command=command)
+        if button_icon is None:
+            button_icon = "open" if direction == "input" else "save"
+        button = self._button(
+            form,
+            text=button_text,
+            icon=button_icon,
+            tone="secondary" if direction == "input" else "success",
+            command=command,
+        )
         button.grid(row=row, column=2, pady=7, sticky="ew")
         return entry, button
 
@@ -1190,7 +1318,12 @@ class CorrelationDesktopApp:
                 tree.item(item, values=values)
             refresh_selection_display()
 
-        toggle_button = ttk.Button(actions, text="Toggle selected row(s)", command=toggle_rows)
+        toggle_button = self._button(
+            actions,
+            text="Toggle selected row(s)",
+            icon="toggle",
+            command=toggle_rows,
+        )
         toggle_button.pack(side="left", padx=(12, 0))
         if not allow_filtering or tree is None:
             toggle_button.state(["disabled"])
@@ -1216,12 +1349,26 @@ class CorrelationDesktopApp:
                 return
             finish(set(selected_exclusions))
 
-        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(8, 0))
-        apply_button = ttk.Button(actions, text="Apply selected exclusions", command=apply_selected)
+        self._button(actions, text="Cancel", icon="close", command=dialog.destroy).pack(
+            side="right", padx=(8, 0)
+        )
+        apply_button = self._button(
+            actions,
+            text="Apply selected exclusions",
+            icon="check",
+            tone="warning",
+            command=apply_selected,
+        )
         apply_button.pack(side="right", padx=(8, 0))
         if not allow_filtering or findings.empty:
             apply_button.state(["disabled"])
-        ttk.Button(actions, text="Continue with all data", command=lambda: finish(set())).pack(
+        self._button(
+            actions,
+            text="Continue with all data",
+            icon="next",
+            tone="primary",
+            command=lambda: finish(set()),
+        ).pack(
             side="right", padx=(8, 0)
         )
 
@@ -1256,8 +1403,19 @@ class CorrelationDesktopApp:
         selected = tk.StringVar()
         custom_combo = ttk.Combobox(controls, textvariable=selected, state="readonly")
         custom_combo.grid(row=0, column=1, padx=(0, 8), sticky="ew")
-        ttk.Button(controls, text="Load", command=lambda: load_selected()).grid(row=0, column=2, padx=3)
-        ttk.Button(controls, text="New", command=lambda: clear_editor()).grid(row=0, column=3, padx=3)
+        self._button(
+            controls,
+            text="Load",
+            icon="open",
+            command=lambda: load_selected(),
+        ).grid(row=0, column=2, padx=3)
+        self._button(
+            controls,
+            text="New",
+            icon="plus",
+            tone="primary",
+            command=lambda: clear_editor(),
+        ).grid(row=0, column=3, padx=3)
         ttk.Label(controls, text=f"Saved in {profile_store_path()}", style="Hint.TLabel").grid(
             row=1, column=1, columnspan=3, pady=(5, 0), sticky="w"
         )
@@ -1445,10 +1603,33 @@ class CorrelationDesktopApp:
             for index in reversed(insertion_files.curselection()):
                 insertion_files.delete(index)
 
-        ttk.Button(insertion_buttons, text="Add…", command=add_insertion).pack(side="left", padx=3)
-        ttk.Button(insertion_buttons, text="Remove", command=remove_insertion).pack(side="left", padx=3)
-        ttk.Button(file_buttons, text="Browse…", command=browse_insertion_files).pack(anchor="w", pady=3)
-        ttk.Button(file_buttons, text="Remove selected", command=remove_selected_insertion_files).pack(
+        self._button(
+            insertion_buttons,
+            text="Add…",
+            icon="plus",
+            tone="primary",
+            command=add_insertion,
+        ).pack(side="left", padx=3)
+        self._button(
+            insertion_buttons,
+            text="Remove",
+            icon="minus",
+            tone="danger",
+            command=remove_insertion,
+        ).pack(side="left", padx=3)
+        self._button(
+            file_buttons,
+            text="Browse…",
+            icon="open",
+            command=browse_insertion_files,
+        ).pack(anchor="w", pady=3)
+        self._button(
+            file_buttons,
+            text="Remove selected",
+            icon="minus",
+            tone="danger",
+            command=remove_selected_insertion_files,
+        ).pack(
             anchor="w", pady=3
         )
         insertion_combo.bind("<<ComboboxSelected>>", choose_insertion)
@@ -1707,8 +1888,20 @@ class CorrelationDesktopApp:
             del configured_test_sets[index]
             load_test_set(min(index, len(configured_test_sets) - 1))
 
-        ttk.Button(test_set_buttons, text="Add…", command=add_test_set).pack(side="left", padx=3)
-        ttk.Button(test_set_buttons, text="Remove", command=remove_test_set).pack(side="left", padx=3)
+        self._button(
+            test_set_buttons,
+            text="Add…",
+            icon="plus",
+            tone="primary",
+            command=add_test_set,
+        ).pack(side="left", padx=3)
+        self._button(
+            test_set_buttons,
+            text="Remove",
+            icon="minus",
+            tone="danger",
+            command=remove_test_set,
+        ).pack(side="left", padx=3)
         test_set_combo.bind("<<ComboboxSelected>>", choose_test_set)
         test_set_strategy.trace_add("write", update_policy_explanations)
         test_set_guard_band.trace_add("write", update_policy_explanations)
@@ -1919,8 +2112,20 @@ class CorrelationDesktopApp:
             del grouping_definitions[index]
             load_condition(min(index, len(grouping_definitions) - 1))
 
-        ttk.Button(condition_buttons, text="Add…", command=add_condition).pack(side="left", padx=3)
-        ttk.Button(condition_buttons, text="Remove", command=remove_condition).pack(side="left", padx=3)
+        self._button(
+            condition_buttons,
+            text="Add…",
+            icon="plus",
+            tone="primary",
+            command=add_condition,
+        ).pack(side="left", padx=3)
+        self._button(
+            condition_buttons,
+            text="Remove",
+            icon="minus",
+            tone="danger",
+            command=remove_condition,
+        ).pack(side="left", padx=3)
         condition_combo.bind("<<ComboboxSelected>>", choose_condition)
         condition_method.trace_add("write", update_identification_controls)
         load_condition(0)
@@ -2142,8 +2347,20 @@ class CorrelationDesktopApp:
                 return
             self.status.set(f"Deleted custom profile '{profile_id}'")
 
-        ttk.Button(actions, text="Delete", command=remove_profile).pack(side="left", padx=4)
-        ttk.Button(actions, text="Validate & Save", command=save_profile).pack(side="left", padx=4)
+        self._button(
+            actions,
+            text="Delete",
+            icon="trash",
+            tone="danger",
+            command=remove_profile,
+        ).pack(side="left", padx=4)
+        self._button(
+            actions,
+            text="Validate & Save",
+            icon="check",
+            tone="success",
+            command=save_profile,
+        ).pack(side="left", padx=4)
         custom_combo.bind("<<ComboboxSelected>>", lambda _event: load_selected())
         refresh_custom_list()
 
@@ -2167,6 +2384,7 @@ class CorrelationDesktopApp:
             lambda: self._choose_folder(raw_folder, "Select raw TE data folder"),
             direction="input",
             button_text="Select…",
+            button_icon="folder",
         )
         self._add_path(
             form,
@@ -2210,7 +2428,13 @@ class CorrelationDesktopApp:
             style="Hint.TLabel",
             wraplength=590,
         ).grid(row=3, column=1, padx=(0, 8), pady=7, sticky="w")
-        ttk.Button(form, text="Save template…", command=save_template).grid(
+        self._button(
+            form,
+            text="Save template…",
+            icon="template",
+            tone="success",
+            command=save_template,
+        ).grid(
             row=3, column=2, pady=7, sticky="ew"
         )
         self._add_path(
@@ -2261,7 +2485,13 @@ class CorrelationDesktopApp:
             elif raw_folder.get() == "Files assigned in profile Insertions":
                 raw_folder.set("")
 
-        run_button = ttk.Button(form, text="Run extraction", command=run)
+        run_button = self._button(
+            form,
+            text="Run extraction",
+            icon="run",
+            tone="primary",
+            command=run,
+        )
         run_button.grid(row=5, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_raw_folder_state)
         update_raw_folder_state()
@@ -2346,7 +2576,13 @@ class CorrelationDesktopApp:
 
             self._start_job(run_button, "Creating editable CV request…", action)
 
-        run_button = ttk.Button(form, text="Create request", command=run)
+        run_button = self._button(
+            form,
+            text="Create request",
+            icon="file",
+            tone="primary",
+            command=run,
+        )
         run_button.grid(row=6, column=1, pady=(18, 0), sticky="e")
 
     def _build_import_tab(self) -> None:
@@ -2415,7 +2651,13 @@ class CorrelationDesktopApp:
 
             self._start_job(run_button, "Validating returned CV measurements…", action)
 
-        run_button = ttk.Button(form, text="Import results", command=run)
+        run_button = self._button(
+            form,
+            text="Import results",
+            icon="import",
+            tone="primary",
+            command=run,
+        )
         run_button.grid(row=6, column=1, pady=(18, 0), sticky="e")
 
     def _build_correlation_tab(self) -> None:
@@ -2582,7 +2824,13 @@ class CorrelationDesktopApp:
                 on_success=review_ready,
             )
 
-        run_button = ttk.Button(form, text="Generate report", command=run)
+        run_button = self._button(
+            form,
+            text="Generate report",
+            icon="report",
+            tone="primary",
+            command=run,
+        )
         run_button.grid(row=8, column=1, pady=(18, 0), sticky="e")
         profile.trace_add("write", update_covariate_state)
         update_covariate_state()
@@ -2732,10 +2980,21 @@ class CorrelationDesktopApp:
 
         file_buttons = ttk.Frame(file_area)
         file_buttons.grid(row=0, column=2, padx=(8, 0), sticky="n")
-        ttk.Button(file_buttons, text="Add CSVs…", command=add_productive_files).pack(
+        self._button(
+            file_buttons,
+            text="Add CSVs…",
+            icon="plus",
+            command=add_productive_files,
+        ).pack(
             fill="x", pady=(0, 5)
         )
-        ttk.Button(file_buttons, text="Remove", command=remove_productive_files).pack(fill="x")
+        self._button(
+            file_buttons,
+            text="Remove",
+            icon="minus",
+            tone="danger",
+            command=remove_productive_files,
+        ).pack(fill="x")
         insertion_combo.bind("<<ComboboxSelected>>", choose_insertion)
         insertion_selected.trace_add("write", lambda *_args: store_current())
 
@@ -2827,11 +3086,18 @@ class CorrelationDesktopApp:
                 action,
             )
 
-        run_button = ttk.Button(form, text="Generate yield forecast", command=run)
+        run_button = self._button(
+            form,
+            text="Generate yield forecast",
+            icon="report",
+            tone="primary",
+            command=run,
+        )
         run_button.grid(row=6, column=1, pady=(14, 0), sticky="e")
-        ttk.Button(
+        self._button(
             insertion_frame,
             text="Reload Section 1 insertions",
+            icon="refresh",
             command=load_profile_insertions,
         ).grid(row=3, column=1, pady=(6, 0), sticky="w")
         profile.trace_add("write", load_profile_insertions)

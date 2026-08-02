@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from cv_ate_correlation.gui import (
+    ACTION_BUTTON_ICONS,
+    ACTION_BUTTON_PALETTE,
     CORRELATION_STRATEGY_EXPLANATIONS,
     GUARD_BAND_EXPLANATIONS,
     GROUPING_CONDITION_OPTIONS,
@@ -20,6 +23,49 @@ from cv_ate_correlation.gui import (
     validate_test_set_definitions,
     workbook_sheet_names,
 )
+
+
+def test_all_gui_actions_use_filled_signal_bloom_buttons_with_icons() -> None:
+    assert set(ACTION_BUTTON_PALETTE) == {
+        "primary", "secondary", "success", "warning", "danger",
+    }
+    for normal, hover, pressed in ACTION_BUTTON_PALETTE.values():
+        assert len({normal, hover, pressed}) == 3
+        assert all(color.startswith("#") and len(color) == 7 for color in (normal, hover, pressed))
+
+    source_path = Path(__file__).resolve().parents[1] / "src" / "cv_ate_correlation" / "gui.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    direct_ttk_buttons = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "ttk"
+        and node.func.attr == "Button"
+    ]
+    assert len(direct_ttk_buttons) == 1, "All action buttons must use the shared _button() factory"
+
+    action_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_button"
+    ]
+    assert len(action_calls) >= 28
+    literal_tones = {"secondary"}
+    for call in action_calls:
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
+        assert "icon" in keywords
+        icon = keywords["icon"]
+        if isinstance(icon, ast.Constant):
+            assert icon.value in ACTION_BUTTON_ICONS
+        tone = keywords.get("tone")
+        if isinstance(tone, ast.Constant):
+            assert tone.value in ACTION_BUTTON_PALETTE
+            literal_tones.add(str(tone.value))
+    assert literal_tones == set(ACTION_BUTTON_PALETTE)
 
 
 def test_workbook_sheet_names_preserves_workbook_order(tmp_path: Path) -> None:
